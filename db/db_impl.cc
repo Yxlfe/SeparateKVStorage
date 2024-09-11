@@ -157,6 +157,7 @@ DBImpl::DBImpl(const Options& raw_options, const std::string& dbname)
 DBImpl::~DBImpl() {
   // Wait for background work to finish
   mutex_.Lock();
+  std::cout << "zc " << "final cur_vlog = " << GetVlogNumber() << std::endl;
   shutting_down_.Release_Store(this);  // Any non-NULL value is ok
   while (bg_compaction_scheduled_ || bg_clean_scheduled_) {//还得等clean线程退出
     bg_cv_.Wait();
@@ -359,6 +360,7 @@ Status DBImpl::Recover(VersionEdit* edit, bool *save_manifest) {
   }
   SequenceNumber max_sequence(0);
   const uint64_t min_log = versions_->LogNumber();
+  // std::cout << "zc " << "min_vlog = " << min_log << std::endl;
   std::vector<std::string> filenames;
   s = env_->GetChildren(dbname_, &filenames);
   if (!s.ok()) {
@@ -396,6 +398,12 @@ Status DBImpl::Recover(VersionEdit* edit, bool *save_manifest) {
   }
 
   std::sort(logs.begin(), logs.end());
+  
+  std::cout << "zc " << std::endl;
+  for (auto log : logs) {
+        std::cout << log << std::endl;
+  }
+
   if(log_number > 0 && !logs.empty())
   {
     if(log_number == logs[0])
@@ -1055,7 +1063,7 @@ Status DBImpl::DoCompactionWork(CompactionState* compact) {
           Slice value = input->value();
           GetVarint64(&value, &size);
           GetVarint32(&value, &vlog_numb);
-           vlog_manager_.AddDropCount(vlog_numb);
+          vlog_manager_.AddDropCount(vlog_numb);
           drop_count++;
         drop = true;    // (A)
       } else if (ikey.type == kTypeDeletion &&
@@ -1493,6 +1501,7 @@ WriteBatch* DBImpl::BuildBatchGroup(Writer** last_writer) {
 Status DBImpl::MakeRoomForWrite(bool force) {
   mutex_.AssertHeld();
   assert(!writers_.empty());
+
   bool allow_delay = !force;
   Status s;
       if(vlog_head_ >= options_.max_vlog_size)
@@ -1565,6 +1574,8 @@ Status DBImpl::MakeRoomForWrite(bool force) {
       force = false;   // Do not force another compaction if have room
       MaybeScheduleCompaction();
     }
+
+
   }
   return s;
 }
@@ -1635,7 +1646,13 @@ void DBImpl::BackgroundCleanAll()
         uint64_t clean_vlog_number = vlog_manager_.GetVlogToClean();
         GarbageCollector garbager(this);
         garbager.SetVlog(clean_vlog_number);
-        garbager.BeginGarbageCollect(&edit, &save_edit);
+        
+        GcStats gc_stats;
+        const uint64_t start_micros = env_->NowMicros();
+        garbager.BeginGarbageCollect(&edit, &save_edit, gc_stats.bytes_read, gc_stats.bytes_rewrite);
+        gc_stats.micros = env_->NowMicros() - start_micros;
+        gc_status_[clean_vlog_number].Add(gc_stats);
+
         if(save_edit)
         {
             mutex_.Lock();
@@ -1655,7 +1672,13 @@ void DBImpl::BackgroundCleanAll()
             break;
         GarbageCollector garbager(this);
         garbager.SetVlog(*iter);
-        garbager.BeginGarbageCollect(&edit, &save_edit);
+        
+        GcStats gc_stats;
+        const uint64_t start_micros = env_->NowMicros();
+        garbager.BeginGarbageCollect(&edit, &save_edit, gc_stats.bytes_read, gc_stats.bytes_rewrite);
+        gc_stats.micros = env_->NowMicros() - start_micros;
+        gc_status_[recover_clean_vlog_number_].Add(gc_stats);
+
         if(save_edit)
         {
             mutex_.Lock();
@@ -1679,7 +1702,14 @@ void DBImpl::BackgroundClean()
     garbager.SetVlog(clean_vlog_number);
     VersionEdit edit;
     bool save_edit = false;
-    garbager.BeginGarbageCollect(&edit, &save_edit);
+    
+    GcStats gc_stats;
+    const uint64_t start_micros = env_->NowMicros();
+    garbager.BeginGarbageCollect(&edit, &save_edit, gc_stats.bytes_read, gc_stats.bytes_rewrite);
+    gc_stats.micros = env_->NowMicros() - start_micros;
+    std::cout << "zc clean_vlog_number = " << clean_vlog_number << " gc_stats.micros = " << gc_stats.micros << std::endl;
+    gc_status_[clean_vlog_number].Add(gc_stats);
+
     if(!save_edit)
        vlog_manager_.RemoveCleaningVlog(clean_vlog_number);
 
@@ -1698,7 +1728,13 @@ void DBImpl::BackgroundRecoverClean()
     bool save_edit = false;
     GarbageCollector garbager(this);
     garbager.SetVlog(recover_clean_vlog_number_, recover_clean_pos_);
-    garbager.BeginGarbageCollect(&edit, &save_edit);
+    
+    GcStats gc_stats;
+    const uint64_t start_micros = env_->NowMicros();
+    garbager.BeginGarbageCollect(&edit, &save_edit, gc_stats.bytes_read, gc_stats.bytes_rewrite);
+    gc_stats.micros = env_->NowMicros() - start_micros;
+    gc_status_[recover_clean_vlog_number_].Add(gc_stats);
+    
     if(!save_edit)
         vlog_manager_.RemoveCleaningVlog(recover_clean_vlog_number_);
 
@@ -1754,6 +1790,25 @@ bool DBImpl::GetProperty(const Slice& property, std::string* value) {
             stats_[level].micros / 1e6,
             stats_[level].bytes_read / 1048576.0,
             stats_[level].bytes_written / 1048576.0);
+        value->append(buf);
+      }
+    }
+    snprintf(buf, sizeof(buf),
+             "                               Gc\n"
+             "FileNumber   GcTime(mis) Read(MB) reWrite(MB)\n"
+             "--------------------------------------------------\n"
+             );
+    value->append(buf);
+    for (const auto& [fileNO, GcStats] : gc_status_) {
+      if (GcStats.micros > 0)
+      {
+        snprintf(
+            buf, sizeof(buf),
+            "%3ld %8.0ld %8.0f %9.0f\n",
+            fileNO,
+            GcStats.micros,
+            GcStats.bytes_read / 1048576.0,
+            GcStats.bytes_rewrite / 1048576.0);
         value->append(buf);
       }
     }

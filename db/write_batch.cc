@@ -20,6 +20,7 @@
 #include "db/memtable.h"
 #include "db/write_batch_internal.h"
 #include "util/coding.h"
+#include <iostream>
 
 namespace leveldb {
 
@@ -117,6 +118,8 @@ Status WriteBatch::Iterate(Handler* handler) const {
 }
 
 Status WriteBatch::Iterate(Handler* handler, uint64_t& pos, uint64_t file_numb) const {//pos是当前vlog文件的大小
+  // std::cout << " zc******: " <<  std::endl;
+  // std::cout << " Iterate pos: " <<  pos << std::endl;
   Slice input(rep_);
   if (input.size() < kHeader) {
     return Status::Corruption("malformed WriteBatch (too small)");
@@ -145,7 +148,15 @@ Status WriteBatch::Iterate(Handler* handler, uint64_t& pos, uint64_t file_numb) 
           PutVarint32(&v, file_numb);
           PutVarint64(&v, pos);
           handler->Put(key, v);
+          // std::cout << " zc******: " <<  std::endl;
+          // std::cout << " file_numb: " <<  file_numb
+          //           << " key: "       <<  key.ToString()
+          //           << " len: "      <<  len
+          //           << " pos: "      <<  pos
+          //           << std::endl;        
           pos = pos + len;//更新pos
+          // std::cout << "after write pos: "      <<  pos
+          //           << std::endl;    
         } else {
           return Status::Corruption("bad WriteBatch Put");
         }

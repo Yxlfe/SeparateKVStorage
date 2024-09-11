@@ -1,12 +1,12 @@
 #/bin/bash
 
-exec="/home/zc/code/Wisckey_SeparateKVStorage/out-static/db_bench" 
+exec="/home/zc/code/mySeparateKVStorage/out-static/db_bench" 
 # 获取脚本的绝对路径
 script_path=$(readlink -f "$0")
 script_dir_path=$(dirname "$script_path")
 dbpath="/database_sdd/wisckeydb_dbbench_test"
 benchmarks=fillrandom,stats
-num=2097152
+num=100000000
 value_size=992
 threads=1
 histogram=1

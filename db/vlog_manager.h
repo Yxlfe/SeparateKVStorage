@@ -17,7 +17,9 @@ class VlogManager
         //上述两种想法的前提都是vlog中kv对有序
         struct VlogInfo{
             log::VReader* vlog_;
-            uint64_t count_;//代表该vlog文件垃圾kv的数量
+            uint64_t invalid_count_;//代表该vlog文件垃圾kv的数量
+            // uint64_t valid_count_;//代表该vlog文件有效kv的数量
+            // uint64_t invalid_size_;//代表该vlog文件垃圾kv的数量
         };
 
         VlogManager(uint64_t clean_threshold);
@@ -28,8 +30,9 @@ class VlogManager
 
         log::VReader* GetVlog(uint64_t vlog_numb);
         void AddDropCount(uint64_t vlog_numb);
+        void DumpDropCount();
         bool HasVlogToClean();
-        uint64_t GetDropCount(uint64_t vlog_numb){return manager_[vlog_numb].count_;}
+        uint64_t GetDropCount(uint64_t vlog_numb){return manager_[vlog_numb].invalid_count_;}
         std::set<uint64_t> GetVlogsToClean(uint64_t clean_threshold);
         uint64_t GetVlogToClean();
         void SetNowVlog(uint64_t vlog_numb);

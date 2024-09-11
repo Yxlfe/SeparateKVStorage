@@ -5,6 +5,8 @@
 #ifndef STORAGE_LEVELDB_DB_DB_IMPL_H_
 #define STORAGE_LEVELDB_DB_DB_IMPL_H_
 
+#include <iostream>
+#include <map>
 #include <deque>
 #include <set>
 #include "db/dbformat.h"
@@ -226,6 +228,22 @@ class DBImpl : public DB {
     }
   };
   CompactionStats stats_[config::kNumLevels];
+
+  struct GcStats {
+    uint64_t micros;
+    uint64_t bytes_read;
+    uint64_t bytes_rewrite;
+
+    GcStats() : micros(0), bytes_read(0), bytes_rewrite(0) { }
+
+    void Add(const GcStats& c) {
+      this->micros += c.micros;
+      this->bytes_read += c.bytes_read;
+      this->bytes_rewrite += c.bytes_rewrite;
+    }
+  };
+
+  std::map<uint64_t, GcStats> gc_status_;
 
   // No copying allowed
   DBImpl(const DBImpl&);

@@ -16,7 +16,7 @@ void GarbageCollector::SetVlog(uint64_t vlog_number, uint64_t garbage_beg_pos)
     garbage_pos_ = garbage_beg_pos;
 }
 
-void GarbageCollector::BeginGarbageCollect(VersionEdit* edit, bool* save_edit)
+void GarbageCollector::BeginGarbageCollect(VersionEdit* edit, bool* save_edit, uint64_t& read_size, uint64_t& rewrite_size)
 {
     *save_edit = false;
     uint64_t garbage_pos = garbage_pos_;
@@ -70,6 +70,7 @@ void GarbageCollector::BeginGarbageCollect(VersionEdit* edit, bool* save_edit)
                 if(item_pos + item_size == garbage_pos_ && file_numb == vlog_number_ )
                 {
                     clean_valid_batch.Put(key, value);
+                    rewrite_size += key.size() + value.size();
                 }
             }
         }
@@ -81,6 +82,7 @@ void GarbageCollector::BeginGarbageCollect(VersionEdit* edit, bool* save_edit)
             clean_valid_batch.Clear();
         }
     }
+
 
 #ifndef NDEBUG
     Log(db_->options_.info_log,"tail is %lu, last key is %s, ;last value is %s\n", garbage_pos_,key.data(),value.data());
@@ -97,6 +99,9 @@ void GarbageCollector::BeginGarbageCollect(VersionEdit* edit, bool* save_edit)
         assert(s.ok());
         clean_valid_batch.Clear();
     }
+    
+    read_size += garbage_pos_ - garbage_pos;
+
 
     if(garbage_pos_ - garbage_pos > 0)
     {

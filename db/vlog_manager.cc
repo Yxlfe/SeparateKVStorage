@@ -1,6 +1,7 @@
 #include "db/vlog_reader.h"
 #include "db/vlog_manager.h"
 #include "util/coding.h"
+#include <iostream>
 
 namespace leveldb {
 
@@ -10,6 +11,7 @@ namespace leveldb {
 
     VlogManager::~VlogManager()
     {
+        DumpDropCount();
         std::tr1::unordered_map<uint64_t, VlogInfo>::iterator iter = manager_.begin();
         for(;iter != manager_.end();iter++)
         {
@@ -21,7 +23,8 @@ namespace leveldb {
     {
         VlogInfo v;
         v.vlog_ = vlog;
-        v.count_ = 0;
+        v.invalid_count_ = 0;
+        // v.valid_count_ = 0;
         bool b = manager_.insert(std::make_pair(vlog_numb, v)).second;
         assert(b);
         now_vlog_ = vlog_numb;
@@ -40,16 +43,28 @@ namespace leveldb {
         cleaning_vlog_set_.erase(vlog_numb);
     }
 
+    void VlogManager::DumpDropCount()
+    {
+        std::tr1::unordered_map<uint64_t, VlogInfo>::iterator iter = manager_.begin();
+        for(;iter != manager_.end();iter++)
+        {
+            std::cout << "zc vlog_numb = "  
+            << iter->first << " invalid_count = " 
+            << iter->second.invalid_count_ << std::endl;
+        }
+    }
+
     void VlogManager::AddDropCount(uint64_t vlog_numb)
     {
          std::tr1::unordered_map<uint64_t, VlogInfo>::iterator iter = manager_.find (vlog_numb);
          if(iter != manager_.end())
          {
-            iter->second.count_++;
+            iter->second.invalid_count_++;
             //zc 这里可以考虑增加对挑选GC vlog文件到cleaning_vlog_set_中的标准的复杂化逻辑
-            if(iter->second.count_ >= clean_threshold_ && vlog_numb != now_vlog_)
+            if(iter->second.invalid_count_ >= clean_threshold_ && vlog_numb != now_vlog_)
             {
                 cleaning_vlog_set_.insert(vlog_numb);
+                // std::cout << "zc cleaning_vlog = " << vlog_numb << std::endl;
             }
          }//否则说明该vlog已经clean过了
     }
@@ -60,7 +75,7 @@ namespace leveldb {
         std::tr1::unordered_map<uint64_t, VlogInfo>::iterator iter = manager_.begin();
         for(;iter != manager_.end();iter++)
         {
-            if(iter->second.count_ >= clean_threshold && iter->first != now_vlog_)
+            if(iter->second.invalid_count_ >= clean_threshold && iter->first != now_vlog_)
                 res.insert(iter->first);
         }
         return res;
@@ -98,7 +113,7 @@ namespace leveldb {
         for(;iter != manager_.end();iter++)
         {
             char buf[8];
-            EncodeFixed64(buf, (iter->second.count_ << 16) | iter->first);
+            EncodeFixed64(buf, (iter->second.invalid_count_ << 16) | iter->first);
             val.append(buf, 8);
         }
         return true;
@@ -114,7 +129,7 @@ namespace leveldb {
             size_t count = code>>16;
             if(manager_.count(file_numb) > 0)//检查manager_现在是否还有该vlog，因为有可能已经删除了
             {
-                manager_[file_numb].count_ = count;
+                manager_[file_numb].invalid_count_ = count;
                 if(count >= clean_threshold_ && file_numb != now_vlog_)
                 {
                     cleaning_vlog_set_.insert(file_numb);
@@ -130,7 +145,7 @@ namespace leveldb {
         std::tr1::unordered_map<uint64_t, VlogInfo>::iterator iter = manager_.find(vlog_numb);
         if(iter != manager_.end())
         {
-            assert(iter->second.count_ >= clean_threshold_);
+            assert(iter->second.invalid_count_ >= clean_threshold_);
             return true;
         }
         else
