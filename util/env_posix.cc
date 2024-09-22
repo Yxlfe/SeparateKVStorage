@@ -517,6 +517,9 @@ class PosixEnv : public Env {
 
   virtual void StartThread(void (*function)(void* arg), void* arg);
 
+//zc 重载多参数
+  // virtual void StartThreadMutiArg(void (*function)(void* arg1, void* arg2), void* arg1, void* arg2);
+
   virtual Status GetTestDirectory(std::string* result) {
     const char* env = getenv("TEST_TMPDIR");
     if (env && env[0] != '\0') {
@@ -672,13 +675,39 @@ struct StartThreadState {
   void (*user_function)(void*);
   void* arg;
 };
+
+struct MutiArgStartThreadState {
+  void (*user_function)(void*, void*);
+  void* arg1;
+  void* arg2;
+};
 }
+
 static void* StartThreadWrapper(void* arg) {
   StartThreadState* state = reinterpret_cast<StartThreadState*>(arg);
   state->user_function(state->arg);
   delete state;
   return NULL;
 }
+
+
+// static void* StartThreadWrapperMutiArg(void* arg) {
+//   MutiArgStartThreadState* state = reinterpret_cast<MutiArgStartThreadState*>(arg);
+//   state->user_function(state->arg1, state->arg2);
+//   delete state;
+//   return NULL;
+// }
+
+// void PosixEnv::StartThreadMutiArg(void (*function)(void* arg1, void* arg2), void* arg1, void* arg2)
+// {
+//   pthread_t t;
+//   MutiArgStartThreadState* state = new MutiArgStartThreadState;
+//   state->user_function = function;
+//   state->arg1 = arg1;
+//   state->arg2 = arg2;
+//   PthreadCall("start thread",
+//               pthread_create(&t, NULL,  &StartThreadWrapperMutiArg, state));
+// }
 
 void PosixEnv::StartThread(void (*function)(void* arg), void* arg) {
   pthread_t t;
@@ -688,6 +717,8 @@ void PosixEnv::StartThread(void (*function)(void* arg), void* arg) {
   PthreadCall("start thread",
               pthread_create(&t, NULL,  &StartThreadWrapper, state));
 }
+
+
 
 }  // namespace
 

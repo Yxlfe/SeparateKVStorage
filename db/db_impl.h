@@ -79,6 +79,7 @@ class DBImpl : public DB {
   void RecordReadSample(Slice key);
   void CleanVlog();
   bool has_cleaned_;
+  // void MaybeScheduleClean(bool isManualClean = false);
   void MaybeScheduleClean(bool isManualClean = false);
   bool IsShutDown()
   {
@@ -132,14 +133,25 @@ class DBImpl : public DB {
   static void BGWork(void* db);
   void BackgroundCall();
   void  BackgroundCompaction() EXCLUSIVE_LOCKS_REQUIRED(mutex_);
+
+  //zc 修改为一次GC多线程回收文件
+  // static void BGClean(void* db, void* vlog_number);
+
   static void BGClean(void* db);
-  static void BGCleanAll(void* db);
+  static void BGManualCleanAll(void* db);
   static void BGCleanRecover(void* db);
+
   void BackgroundClean();
-  void BackgroundCleanAll();
+  //zc 加入参数VlogManager类型
+  // void BackgroundClean(uint64_t clean_vlog_number);
+  void BackgroundManualCleanAll();
   void BackgroundRecoverClean();
   void CleanupCompaction(CompactionState* compact)
       EXCLUSIVE_LOCKS_REQUIRED(mutex_);
+
+  //zc function
+  void AddValidInfoManager(WriteBatch* batch, int head_size, uint64_t vlog_offset);
+
   Status DoCompactionWork(CompactionState* compact)
       EXCLUSIVE_LOCKS_REQUIRED(mutex_);
 
@@ -176,11 +188,13 @@ class DBImpl : public DB {
   uint64_t vlog_head_;//当前vlog文件的偏移写
   uint64_t check_point_;//vlog文件的重启点
   uint64_t check_log_;//从那个vlog文件开始回放
-  uint64_t drop_count_;//合并产生了多少条垃圾记录，这些新产生的信息还没有持久化到sst文件
+  // uint64_t drop_count_;//合并产生了多少条垃圾记录，这些新产生的信息还没有持久化到sst文件
+  uint64_t drop_size_;//系统在开启状态下compaction合并产生的垃圾记录的总大小，这些新产生的信息还没有持久化到sst文件
   uint64_t recover_clean_vlog_number_;
   uint64_t recover_clean_pos_;
   VlogManager vlog_manager_;
   uint32_t seed_;                // For sampling.
+  
 
   // Queue of writers.
   std::deque<Writer*> writers_;
@@ -197,6 +211,8 @@ class DBImpl : public DB {
   // Has a background compaction been scheduled or is running?
   bool bg_compaction_scheduled_;
   bool bg_clean_scheduled_;
+  // uint64_t active_threads_;
+  
   // Information for a manual compaction
   struct ManualCompaction {
     int level;

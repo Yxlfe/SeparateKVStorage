@@ -156,7 +156,8 @@ struct Options {
   uint64_t clean_write_buffer_size;
   uint64_t clean_threshold;
   uint64_t min_clean_threshold;
-  uint64_t log_dropCount_threshold;
+  // uint64_t log_dropCount_threshold;
+  uint64_t log_dropSize_threshold;
   uint64_t max_vlog_size;
   // Create an Options object with default values for all fields.
   Options();

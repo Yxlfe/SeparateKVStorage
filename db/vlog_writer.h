@@ -27,6 +27,9 @@ class VWriter {
 
   Status AddRecord(const Slice& slice, int& head_size);
 
+  //zc 删除附加的crc和slice len
+  Status AddRecord(const Slice& slice);
+
  private:
   WritableFile* dest_;
   // No copying allowed

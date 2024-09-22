@@ -32,6 +32,46 @@ void EncodeFixed64(char* buf, uint64_t value) {
   }
 }
 
+// void EncodeFixed256(char* buf, uint64_t value)
+// {
+//     if (port::kLittleEndian) {
+//     memcpy(buf, &value, sizeof(value));
+//   } else {
+//     buf[0] = value & 0xff;
+//     buf[1] = (value >> 8) & 0xff;
+//     buf[2] = (value >> 16) & 0xff;
+//     buf[3] = (value >> 24) & 0xff;
+//     buf[4] = (value >> 32) & 0xff;
+//     buf[5] = (value >> 40) & 0xff;
+//     buf[6] = (value >> 48) & 0xff;
+//     buf[7] = (value >> 56) & 0xff;
+//     buf[8] = (value >> 64) & 0xff;
+//     buf[9] = (value >> 72) & 0xff;
+//     buf[10] = (value >> 80) & 0xff;
+//     buf[11] = (value >> 88) & 0xff;
+//     buf[12] = (value >> 96) & 0xff;
+//     buf[13] = (value >> 104) & 0xff;
+//     buf[14] = (value >> 112) & 0xff;
+//     buf[15] = (value >> 120) & 0xff;
+//     buf[16] = (value >> 128) & 0xff;
+//     buf[17] = (value >> 136) & 0xff;
+//     buf[18] = (value >> 144) & 0xff;
+//     buf[19] = (value >> 152) & 0xff;
+//     buf[20] = (value >> 160) & 0xff;
+//     buf[21] = (value >> 168) & 0xff;
+//     buf[22] = (value >> 176) & 0xff;
+//     buf[23] = (value >> 184) & 0xff;
+//     buf[24] = (value >> 192) & 0xff;
+//     buf[25] = (value >> 200) & 0xff;
+//     buf[26] = (value >> 208) & 0xff;  
+//     buf[27] = (value >> 216) & 0xff;  
+//     buf[28] = (value >> 224) & 0xff;  
+//     buf[29] = (value >> 232) & 0xff;  
+//     buf[30] = (value >> 240) & 0xff;
+//     buf[31] = (value >> 248) & 0xff;          
+//   }
+// }
+
 void PutFixed32(std::string* dst, uint32_t value) {
   char buf[sizeof(value)];
   EncodeFixed32(buf, value);

@@ -146,6 +146,9 @@ class Env {
   // When "function(arg)" returns, the thread will be destroyed.
   virtual void StartThread(void (*function)(void* arg), void* arg) = 0;
 
+  //zc
+  // virtual void StartThreadMutiArg(void (*function)(void* arg1, void* arg2), void* arg1, void* arg2) = 0;
+
   // *path is set to a temporary directory that can be used for testing. It may
   // or many not have just been created. The directory may or may not differ
   // between runs of the same process, but subsequent calls will return the
@@ -341,6 +344,11 @@ class EnvWrapper : public Env {
   void StartThread(void (*f)(void*), void* a) {
     return target_->StartThread(f, a);
   }
+
+  //zc
+  // void StartThreadMutiArg(void (*f)(void*, void*), void* a1, void* a2) {
+  //   return target_->StartThreadMutiArg(f, a1, a2);
+  // }
   virtual Status GetTestDirectory(std::string* path) {
     return target_->GetTestDirectory(path);
   }

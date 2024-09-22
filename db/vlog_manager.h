@@ -1,8 +1,10 @@
 #ifndef STORAGE_LEVELDB_DB_VLOG_MANAGER_H_
 #define STORAGE_LEVELDB_DB_VLOG_MANAGER_H_
 
-#include <tr1/unordered_map>
-#include <tr1/unordered_set>
+#include <algorithm>
+#include <map>
+#include <unordered_map>
+#include <unordered_set>
 #include "db/vlog_reader.h"
 #include <set>
 
@@ -17,31 +19,70 @@ class VlogManager
         //上述两种想法的前提都是vlog中kv对有序
         struct VlogInfo{
             log::VReader* vlog_;
-            uint64_t invalid_count_;//代表该vlog文件垃圾kv的数量
-            // uint64_t valid_count_;//代表该vlog文件有效kv的数量
-            // uint64_t invalid_size_;//代表该vlog文件垃圾kv的数量
+            // uint64_t invalid_count_;//代表该vlog文件垃圾kv的数量
+            // uint64_t valid_size_;//代表该vlog文件垃圾kv的大小
+            uint64_t invalid_size_;//代表该vlog文件垃圾kv的数量
+            uint64_t valid_count_;//代表该vlog文件有效kv的数量
+            uint64_t valid_smallest_key_size_;
+            std::string valid_smallest_key_;//代表该vlog文件有效kv的最小值
+            uint64_t valid_largest_key_size_;
+            std::string valid_largest_key_;//代表该vlog文件有效kv的最大值
         };
 
-        VlogManager(uint64_t clean_threshold);
+        //zc 自定义比较器，按值降序排序,如果值相同按照键升序排序，因此无法保证键的唯一性
+        struct CompareByValueDesc {
+            template <typename T>
+            bool operator()(const T& lhs, const T& rhs) const {
+                if (lhs.second != rhs.second) {
+                    return lhs.second > rhs.second;  // 降序
+                }
+                return lhs.first < rhs.first;  // 如果值相等，则按键升序排序
+            }
+        };
+
+
+        VlogManager(uint64_t clean_threshold = 0, uint64_t min_clean_threshold = 0);
         ~VlogManager();
 
         void AddVlog(uint64_t vlog_numb, log::VReader* vlog);//vlog一定要是new出来的，vlog_manager的析构函数会delete它
+        //del
         void RemoveCleaningVlog(uint64_t vlog_numb);
+        void RemoveSortedCleaningVlog(uint64_t vlog_numb);
 
         log::VReader* GetVlog(uint64_t vlog_numb);
-        void AddDropCount(uint64_t vlog_numb);
+        // void AddDropCount(uint64_t vlog_numb);
+        void AddDropInfo(uint64_t vlog_numb, uint64_t invalid_size_ = 0);
+        void AddValidInfo(uint64_t vlog_numb, std::string current_user_key);
         void DumpDropCount();
+        //del
         bool HasVlogToClean();
-        uint64_t GetDropCount(uint64_t vlog_numb){return manager_[vlog_numb].invalid_count_;}
+        //zc
+        bool HasVlogOverSizeToClean();
+        bool IsCurrent_GCVlogs_Empty();
+        uint64_t GetCurrent_GCVlogsSize();
+
+        // uint64_t GetDropCount(uint64_t vlog_numb){return manager_[vlog_numb].invalid_size_;}
+        uint64_t GetDropSize(uint64_t vlog_numb){return manager_[vlog_numb].invalid_size_;}        
         std::set<uint64_t> GetVlogsToClean(uint64_t clean_threshold);
+        //del
         uint64_t GetVlogToClean();
+        uint64_t GetSortedVlogToClean();
         void SetNowVlog(uint64_t vlog_numb);
-        bool Serialize(std::string& val);
-        bool Deserialize(std::string& val);
+        // bool Serialize(std::string& val);
+        // bool Deserialize(std::string& val);
+        bool SerializeVlogMetaData(std::string& val);
+        bool DeserializeVlogMetaData(std::string& val);
         bool NeedRecover(uint64_t vlog_numb);
+        //zc
+        void DumpCurrentSortedCleaningVlogsBySize() const;
     private:
-        std::tr1::unordered_map<uint64_t, VlogInfo> manager_;
-        std::tr1::unordered_set<uint64_t> cleaning_vlog_set_;
+        std::unordered_map<uint64_t, VlogInfo> manager_;
+        std::unordered_set<uint64_t> cleaning_vlog_set_;
+        //zc 添加一个新的map来按invalid_size_排序存储vlog编号
+        std::set<std::pair<uint64_t, uint64_t>, CompareByValueDesc> sorted_cleaningVlogs_bySize_;
+        //zc 当前GC线程回收的vlog编号集合
+        std::set<std::pair<uint64_t, uint64_t>, CompareByValueDesc> current_sorted_cleaningVlogs_bySize_;
+        uint64_t min_clean_threshold_;
         uint64_t clean_threshold_;
         uint64_t now_vlog_;
 };

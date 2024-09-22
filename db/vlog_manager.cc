@@ -5,14 +5,14 @@
 
 namespace leveldb {
 
-    VlogManager::VlogManager(uint64_t clean_threshold):clean_threshold_(clean_threshold),now_vlog_(0)
+    VlogManager::VlogManager(uint64_t clean_threshold, uint64_t min_clean_threshold):clean_threshold_(clean_threshold),min_clean_threshold_(min_clean_threshold),now_vlog_(0)
     {
     }
 
     VlogManager::~VlogManager()
     {
         DumpDropCount();
-        std::tr1::unordered_map<uint64_t, VlogInfo>::iterator iter = manager_.begin();
+        std::unordered_map<uint64_t, VlogInfo>::iterator iter = manager_.begin();
         for(;iter != manager_.end();iter++)
         {
             delete iter->second.vlog_;
@@ -23,7 +23,11 @@ namespace leveldb {
     {
         VlogInfo v;
         v.vlog_ = vlog;
-        v.invalid_count_ = 0;
+        v.invalid_size_ = 0;
+        v.valid_count_ = 0;
+        v.valid_smallest_key_size_ = 0;
+        v.valid_largest_key_size_ = 0;
+
         // v.valid_count_ = 0;
         bool b = manager_.insert(std::make_pair(vlog_numb, v)).second;
         assert(b);
@@ -37,45 +41,141 @@ namespace leveldb {
 
     void VlogManager::RemoveCleaningVlog(uint64_t vlog_numb)//与GetVlogsToClean对应
     {
-        std::tr1::unordered_map<uint64_t, VlogInfo>::const_iterator iter = manager_.find (vlog_numb);
+        std::unordered_map<uint64_t, VlogInfo>::const_iterator iter = manager_.find (vlog_numb);
         delete iter->second.vlog_;
         manager_.erase(iter);
         cleaning_vlog_set_.erase(vlog_numb);
     }
 
-    void VlogManager::DumpDropCount()
+    //zc
+    void VlogManager::RemoveSortedCleaningVlog(uint64_t vlog_numb)
     {
-        std::tr1::unordered_map<uint64_t, VlogInfo>::iterator iter = manager_.begin();
-        for(;iter != manager_.end();iter++)
-        {
-            std::cout << "zc vlog_numb = "  
-            << iter->first << " invalid_count = " 
-            << iter->second.invalid_count_ << std::endl;
+        std::unordered_map<uint64_t, VlogInfo>::const_iterator iter = manager_.find (vlog_numb);
+        delete iter->second.vlog_;
+        manager_.erase(iter);
+        // 查找当前sorted_cleaningVlogs_bySize_键为vlog_numb的元素
+        auto it1 = std::find_if(sorted_cleaningVlogs_bySize_.begin(), sorted_cleaningVlogs_bySize_.end(), [vlog_numb](const std::pair<int, int>& elem) {
+            return elem.first == vlog_numb;
+        });
+
+        // 如果找到了，删除旧的元素
+        if (it1 != sorted_cleaningVlogs_bySize_.end()) {
+            sorted_cleaningVlogs_bySize_.erase(it1);  // 删除元素
+        }
+
+        // 查找当前键为vlog_numb的元素
+        auto it2 = std::find_if(current_sorted_cleaningVlogs_bySize_.begin(), current_sorted_cleaningVlogs_bySize_.end(), [vlog_numb](const std::pair<int, int>& elem) {
+            return elem.first == vlog_numb;
+        });
+
+        // 如果找到了，删除旧的元素
+        if (it2 != sorted_cleaningVlogs_bySize_.end()) {
+            current_sorted_cleaningVlogs_bySize_.erase(it2);  // 删除元素
         }
     }
 
-    void VlogManager::AddDropCount(uint64_t vlog_numb)
+void VlogManager::DumpDropCount()
+{
+    // Iterate through the manager_ map
+    for (auto iter = manager_.begin(); iter != manager_.end(); ++iter)
     {
-         std::tr1::unordered_map<uint64_t, VlogInfo>::iterator iter = manager_.find (vlog_numb);
-         if(iter != manager_.end())
-         {
-            iter->second.invalid_count_++;
-            //zc 这里可以考虑增加对挑选GC vlog文件到cleaning_vlog_set_中的标准的复杂化逻辑
-            if(iter->second.invalid_count_ >= clean_threshold_ && vlog_numb != now_vlog_)
+        uint64_t vlogNum = iter->first; // The vlog number (key)
+        VlogInfo& info = iter->second;  // The VlogInfo struct (value)
+
+        // Output the necessary fields from VlogInfo
+        std::cout << "Vlog Number: " << vlogNum << std::endl;
+        std::cout << "Invalid Size: " << info.invalid_size_ << std::endl;
+        std::cout << "Valid Count: " << info.valid_count_ << std::endl;
+        std::cout << "Valid Smallest Key Size: " << info.valid_smallest_key_size_ << std::endl;
+        std::cout << "Valid Smallest Key: " << info.valid_smallest_key_ << std::endl;
+        std::cout << "Valid Largest Key Size: " << info.valid_largest_key_size_ << std::endl;
+        std::cout << "Valid Largest Key: " << info.valid_largest_key_ << std::endl;
+        std::cout << "----------------------------------------" << std::endl;
+    }
+}
+
+
+    // void VlogManager::AddDropCount(uint64_t vlog_numb)
+    // {
+    //      std::unordered_map<uint64_t, VlogInfo>::iterator iter = manager_.find (vlog_numb);
+    //      if(iter != manager_.end())
+    //      {
+    //         iter->second.invalid_count_++;
+    //         //zc 这里可以考虑增加对挑选GC vlog文件到cleaning_vlog_set_中的标准的复杂化逻辑
+    //         if(iter->second.invalid_count_ >= clean_threshold_ && vlog_numb != now_vlog_)
+    //         {
+    //             cleaning_vlog_set_.insert(vlog_numb);
+    //             // std::cout << "zc cleaning_vlog = " << vlog_numb << std::endl;
+    //         }
+    //      }//否则说明该vlog已经clean过了
+    // }
+    
+    void VlogManager::AddDropInfo(uint64_t vlog_numb, uint64_t invalid_size)
+    {
+        auto iter = manager_.find(vlog_numb);
+        if (iter != manager_.end()) {
+            // 更新VlogInfo中的invalid_size_
+            iter->second.invalid_size_ += invalid_size;
+            // iter->second.valid_smallest_key_size_ = valid_smallest_key.size();            
+            // iter->second.valid_smallest_key_ = valid_smallest_key;
+            // iter->second.valid_largest_key_size_ = valid_largest_key.size();    
+            // iter->second.valid_largest_key_ = valid_largest_key;
+            
+            // if(iter->second.invalid_size_ >= clean_threshold_ && vlog_numb != now_vlog_)
+            if(vlog_numb != now_vlog_ && iter->second.invalid_size_ > min_clean_threshold_)
             {
-                cleaning_vlog_set_.insert(vlog_numb);
-                // std::cout << "zc cleaning_vlog = " << vlog_numb << std::endl;
+                // 查找当前键为vlog_numb的元素
+                auto it = std::find_if(sorted_cleaningVlogs_bySize_.begin(), sorted_cleaningVlogs_bySize_.end(), [vlog_numb](const std::pair<int, int>& elem) {
+                    return elem.first == vlog_numb;
+                });
+
+                // 如果找到了，先删除旧的元素
+                if (it != sorted_cleaningVlogs_bySize_.end()) {
+                    sorted_cleaningVlogs_bySize_.erase(it);  // 删除元素
+                }
+
+                sorted_cleaningVlogs_bySize_.insert(std::make_pair(vlog_numb, iter->second.invalid_size_));
             }
-         }//否则说明该vlog已经clean过了
+
+        }
+    }
+
+    void VlogManager::AddValidInfo(uint64_t vlog_numb, std::string current_user_key)
+    {
+        auto iter = manager_.find(vlog_numb);
+        if (iter != manager_.end()) {
+            // 更新VlogInfo中的invalid_size_
+            iter->second.valid_count_ ++;
+            if(iter->second.valid_smallest_key_size_ == 0 && iter->second.valid_largest_key_size_ == 0)
+            {
+                iter->second.valid_largest_key_ = current_user_key;
+                iter->second.valid_smallest_key_ = current_user_key;
+            }
+            else 
+            {
+                if(current_user_key > iter->second.valid_largest_key_)
+                {
+                    iter->second.valid_largest_key_ = current_user_key;
+                }
+                else
+                {
+                    iter->second.valid_smallest_key_ = current_user_key;
+                }
+
+            }            
+
+            iter->second.valid_smallest_key_size_ = current_user_key.size();
+            iter->second.valid_largest_key_size_ = current_user_key.size();    
+        }
     }
 
     std::set<uint64_t> VlogManager::GetVlogsToClean(uint64_t clean_threshold)
     {
         std::set<uint64_t> res;
-        std::tr1::unordered_map<uint64_t, VlogInfo>::iterator iter = manager_.begin();
+        std::unordered_map<uint64_t, VlogInfo>::iterator iter = manager_.begin();
         for(;iter != manager_.end();iter++)
         {
-            if(iter->second.invalid_count_ >= clean_threshold && iter->first != now_vlog_)
+            if(iter->second.invalid_size_ >= clean_threshold && iter->first != now_vlog_)
                 res.insert(iter->first);
         }
         return res;
@@ -83,14 +183,23 @@ namespace leveldb {
 
     uint64_t VlogManager::GetVlogToClean()
     {
-       std::tr1::unordered_set<uint64_t>::iterator iter = cleaning_vlog_set_.begin();
+       std::unordered_set<uint64_t>::iterator iter = cleaning_vlog_set_.begin();
        assert(iter != cleaning_vlog_set_.end());
        return *iter;
     }
 
+    //zc
+    uint64_t VlogManager::GetSortedVlogToClean()
+    {
+       auto iter = current_sorted_cleaningVlogs_bySize_.begin();
+       assert(iter != current_sorted_cleaningVlogs_bySize_.end());
+       return iter->first;
+    }
+
+
     log::VReader* VlogManager::GetVlog(uint64_t vlog_numb)
     {
-        std::tr1::unordered_map<uint64_t, VlogInfo>::const_iterator iter = manager_.find (vlog_numb);
+        std::unordered_map<uint64_t, VlogInfo>::const_iterator iter = manager_.find (vlog_numb);
         if(iter == manager_.end())
             return NULL;
         else
@@ -102,50 +211,193 @@ namespace leveldb {
         return !cleaning_vlog_set_.empty();
     }
 
-    bool VlogManager::Serialize(std::string& val)
+    bool VlogManager::IsCurrent_GCVlogs_Empty()
+    {
+        return !current_sorted_cleaningVlogs_bySize_.empty();
+    }
+
+    uint64_t VlogManager::GetCurrent_GCVlogsSize()
+    {
+        return current_sorted_cleaningVlogs_bySize_.size();
+    }
+
+    // Dump 接口，用于打印键值对
+    void VlogManager::DumpCurrentSortedCleaningVlogsBySize() const {
+        std::cout << "Dumping current_sorted_cleaningVlogs_bySize_:" << std::endl;
+        for (const auto& pair : current_sorted_cleaningVlogs_bySize_) {
+            std::cout << "VlogNumber: " << pair.first << ", Total invalidSize: " << pair.second << std::endl;
+        }
+    }
+
+    bool VlogManager::HasVlogOverSizeToClean()
+    {
+        uint64_t sum = 0;
+        bool found = false; // 用于标识是否找到超过阈值的情况
+
+        for (const auto& element : sorted_cleaningVlogs_bySize_) {
+            current_sorted_cleaningVlogs_bySize_.insert(element);
+            sum += element.second;
+            // std::cout << "Vlog Number, invalid size: (" << element.first << ", " << element.second << "), Current sum: " << sum << std::endl;
+            if (sum > clean_threshold_) {
+                DumpCurrentSortedCleaningVlogsBySize();
+                found = true; 
+                break;
+            }
+        }
+
+        if (!found) {
+            current_sorted_cleaningVlogs_bySize_.clear();
+        }
+
+        return found;
+    }
+
+    // bool VlogManager::Serialize(std::string& val)
+    // {
+    //     val.clear();
+    //     uint64_t size = manager_.size();
+    //     if(size == 0)
+    //         return false;
+
+    //     std::unordered_map<uint64_t, VlogInfo>::iterator iter = manager_.begin();
+    //     for(;iter != manager_.end();iter++)
+    //     {
+    //         char buf[8];
+    //         EncodeFixed64(buf, (iter->second.invalid_count_ << 16) | iter->first);
+    //         val.append(buf, 8);
+    //     }
+    //     return true;
+    // }
+    
+    //zc modify
+    bool VlogManager::SerializeVlogMetaData(std::string& val)
     {
         val.clear();
         uint64_t size = manager_.size();
         if(size == 0)
             return false;
 
-        std::tr1::unordered_map<uint64_t, VlogInfo>::iterator iter = manager_.begin();
+        std::unordered_map<uint64_t, VlogInfo>::iterator iter = manager_.begin();
         for(;iter != manager_.end();iter++)
         {
-            char buf[8];
-            EncodeFixed64(buf, (iter->second.invalid_count_ << 16) | iter->first);
-            val.append(buf, 8);
+            uint64_t size = 40 + iter->second.valid_smallest_key_size_ + iter->second.valid_largest_key_size_;
+            uint64_t buf_offset = 0; 
+            char buf[size];
+            EncodeFixed64(buf + buf_offset, iter->first); 
+            buf_offset += 8;
+            EncodeFixed64(buf + buf_offset, iter->second.invalid_size_);
+            buf_offset += 8;
+            EncodeFixed64(buf + buf_offset, iter->second.valid_count_);
+            buf_offset += 8;
+            EncodeFixed64(buf + buf_offset, iter->second.valid_smallest_key_size_);
+            buf_offset += 8;
+            memcpy(buf + buf_offset, iter->second.valid_smallest_key_.data(), iter->second.valid_smallest_key_size_);
+            buf_offset += iter->second.valid_smallest_key_size_;
+            EncodeFixed64(buf + buf_offset, iter->second.valid_largest_key_size_);
+            buf_offset += 8;
+            memcpy(buf + buf_offset, iter->second.valid_largest_key_.data(), iter->second.valid_largest_key_size_);
+            // buf_offset += iter->second.valid_largest_key_size_;
+            val.append(buf, size);
         }
         return true;
     }
 
-    bool VlogManager::Deserialize(std::string& val)
+    bool VlogManager::DeserializeVlogMetaData(std::string& val)
     {
         Slice input(val);
         while(!input.empty())
         {
-            uint64_t code = DecodeFixed64(input.data());
-            uint64_t file_numb = code & 0xffff;
-            size_t count = code>>16;
-            if(manager_.count(file_numb) > 0)//检查manager_现在是否还有该vlog，因为有可能已经删除了
+            uint64_t buf_offset = 0; 
+
+            uint64_t vlog_numb = DecodeFixed64(input.data() + buf_offset); // Decode vlog number
+            buf_offset += 8;
+
+            uint64_t invalid_size = DecodeFixed64(input.data() + buf_offset); // Decode invalid_size
+            buf_offset += 8;
+
+            uint64_t valid_count = DecodeFixed64(input.data() + buf_offset); // Decode valid_size
+            buf_offset += 8;
+
+            uint64_t valid_smallest_key_size = DecodeFixed64(input.data() + buf_offset); // Decode valid_smallest_key_size
+            buf_offset += 8;
+
+            std::string valid_smallest_key;
+            if (valid_smallest_key_size != 0)
             {
-                manager_[file_numb].invalid_count_ = count;
-                if(count >= clean_threshold_ && file_numb != now_vlog_)
+                valid_smallest_key = std::string(input.data() + buf_offset, valid_smallest_key_size);
+                buf_offset += valid_smallest_key_size;
+            }
+
+            uint64_t valid_largest_key_size = DecodeFixed64(input.data() + buf_offset); // Decode valid_largest_key_size
+            buf_offset += 8;
+
+            std::string valid_largest_key;
+            if (valid_largest_key_size != 0)
+            {
+                valid_largest_key = std::string(input.data() + buf_offset, valid_largest_key_size);
+                buf_offset += valid_largest_key_size;
+            }
+
+            if(manager_.count(vlog_numb) > 0)//检查manager_现在是否还有该vlog，因为有可能已经删除了
+            {
+                manager_[vlog_numb].invalid_size_ = invalid_size;
+                manager_[vlog_numb].valid_count_ = valid_count;
+                manager_[vlog_numb].valid_smallest_key_size_ = valid_smallest_key_size;
+                manager_[vlog_numb].valid_smallest_key_ = valid_smallest_key;
+                manager_[vlog_numb].valid_largest_key_size_ = valid_largest_key_size;
+                manager_[vlog_numb].valid_largest_key_ = valid_largest_key;
+                if(invalid_size >= clean_threshold_ && vlog_numb != now_vlog_)
                 {
-                    cleaning_vlog_set_.insert(file_numb);
+                    // cleaning_vlog_set_.insert(vlog_numb);
+                    // 更新排序map
+
+                    // 首先删除旧的键值对（如果存在）
+                    // 查找当前键为vlog_numb的元素
+                    auto it = std::find_if(sorted_cleaningVlogs_bySize_.begin(), sorted_cleaningVlogs_bySize_.end(), [vlog_numb](const std::pair<int, int>& elem) {
+                        return elem.first == vlog_numb;
+                    });
+
+                    // 如果找到了，先删除旧的元素
+                    if (it != sorted_cleaningVlogs_bySize_.end()) {
+                        sorted_cleaningVlogs_bySize_.erase(it);  // 删除元素
+                    }
+
+                    // 添加新的键值对
+                    sorted_cleaningVlogs_bySize_.insert(std::make_pair(vlog_numb, invalid_size));
                 }
             }
-            input.remove_prefix(8);
+            input.remove_prefix(buf_offset);
         }
         return true;
     }
 
+    // bool VlogManager::Deserialize(std::string& val)
+    // {
+    //     Slice input(val);
+    //     while(!input.empty())
+    //     {
+    //         uint64_t code = DecodeFixed64(input.data());
+    //         uint64_t file_numb = code & 0xffff;
+    //         size_t count = code>>16;
+    //         if(manager_.count(file_numb) > 0)//检查manager_现在是否还有该vlog，因为有可能已经删除了
+    //         {
+    //             manager_[file_numb].invalid_count_ = count;
+    //             if(count >= clean_threshold_ && file_numb != now_vlog_)
+    //             {
+    //                 cleaning_vlog_set_.insert(file_numb);
+    //             }
+    //         }
+    //         input.remove_prefix(8);
+    //     }
+    //     return true;
+    // }
+
     bool VlogManager::NeedRecover(uint64_t vlog_numb)
     {
-        std::tr1::unordered_map<uint64_t, VlogInfo>::iterator iter = manager_.find(vlog_numb);
+        std::unordered_map<uint64_t, VlogInfo>::iterator iter = manager_.find(vlog_numb);
         if(iter != manager_.end())
         {
-            assert(iter->second.invalid_count_ >= clean_threshold_);
+            assert(iter->second.invalid_size_ >= clean_threshold_);
             return true;
         }
         else

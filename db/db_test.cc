@@ -617,7 +617,8 @@ TEST(DBTest,garbagerefuse)//检验不重用manifest文件时，vloginfo headinfo
     Options options = CurrentOptions();
     options.clean_threshold = 3;
     options.max_vlog_size = 1000;
-    options.log_dropCount_threshold = 1;
+    // options.log_dropCount_threshold = 1;
+    options.log_dropSize_threshold = 1;
     Reopen(&options);
     ASSERT_OK(Put("foo", "v1"));
     ASSERT_OK(Put("bar", "b1"));
@@ -657,7 +658,7 @@ TEST(DBTest,garbage)//检验reopen时能否恢复vloginfo
     Options options = CurrentOptions();
     options.clean_threshold = 3;
     options.max_vlog_size = 1000;
-    options.log_dropCount_threshold = 1;
+    options.log_dropSize_threshold = 1;
     Reopen(&options);
     ASSERT_OK(Put("foo", "v1"));
     ASSERT_OK(Put("bar", "b1"));
@@ -741,14 +742,19 @@ TEST(DBTest, VlogManager)
         vlog_reader[i] = new log::VReader(vlr_file, true,0);
         vlog_manager.AddVlog(i, vlog_reader[i]);
     }
-    vlog_manager.AddDropCount(7);
+    // vlog_manager.AddDropCount(7);
+    vlog_manager.AddDropInfo(7);
     for(int i = 0; i< 4; i++)
     {
-        vlog_manager.AddDropCount(8);
-        vlog_manager.AddDropCount(6);
+          vlog_manager.AddDropInfo(8);
+          vlog_manager.AddDropInfo(6);
+        // vlog_manager.AddDropCount(8);
+        // vlog_manager.AddDropCount(6);
     }
     std::string str;
-    ASSERT_TRUE(vlog_manager.Serialize(str));
+    // ASSERT_TRUE(vlog_manager.Serialize(str));
+    //zc modify
+    ASSERT_TRUE(vlog_manager.SerializeVlogMetaData(str));
 
     VlogManager vlog_manager1(3);
     log::VReader* vlog_reader1[10];
@@ -760,24 +766,33 @@ TEST(DBTest, VlogManager)
         vlog_reader1[i] = new log::VReader(vlr_file, true,0);
         vlog_manager1.AddVlog(i, vlog_reader1[i]);
     }
-    ASSERT_TRUE(vlog_manager1.Deserialize(str));
+    ASSERT_TRUE(vlog_manager1.DeserializeVlogMetaData(str));
     for(uint32_t i = 0; i < 10; i++)
     {
-        ASSERT_EQ(vlog_manager.GetDropCount(i),vlog_manager1.GetDropCount(i));
+        // ASSERT_EQ(vlog_manager.GetDropCount(i),vlog_manager1.GetDropCount(i));
+        ASSERT_EQ(vlog_manager.GetDropSize(i),vlog_manager1.GetDropSize(i));
     }
     for(int i = 0; i <2; i++)
     {
-        ASSERT_TRUE(vlog_manager.HasVlogToClean());
-        ASSERT_TRUE(vlog_manager1.HasVlogToClean());
-        uint64_t numb,numb1;
-        numb = vlog_manager.GetVlogToClean();
-        numb1 = vlog_manager1.GetVlogToClean();
+        // ASSERT_TRUE(vlog_manager.HasVlogToClean());
+        // ASSERT_TRUE(vlog_manager1.HasVlogToClean());
+        ASSERT_TRUE(vlog_manager.HasVlogOverSizeToClean());
+        ASSERT_TRUE(vlog_manager1.HasVlogOverSizeToClean());
+        uint64_t numb,numb1;        
+        // numb = vlog_manager.GetVlogToClean();
+        // numb1 = vlog_manager1.GetVlogToClean();
+        numb = vlog_manager.GetSortedVlogToClean();
+        numb1 = vlog_manager1.GetSortedVlogToClean();
         ASSERT_EQ(numb1,numb);
-        vlog_manager.RemoveCleaningVlog(numb);
-        vlog_manager1.RemoveCleaningVlog(numb1);
+        // vlog_manager.RemoveCleaningVlog(numb);
+        // vlog_manager1.RemoveCleaningVlog(numb1);
+        vlog_manager.RemoveSortedCleaningVlog(numb);
+        vlog_manager1.RemoveSortedCleaningVlog(numb1);
     }
-    ASSERT_TRUE(!vlog_manager.HasVlogToClean());
-    ASSERT_TRUE(!vlog_manager1.HasVlogToClean());
+    // ASSERT_TRUE(!vlog_manager.HasVlogToClean());
+    // ASSERT_TRUE(!vlog_manager1.HasVlogToClean());
+    ASSERT_TRUE(!vlog_manager.HasVlogOverSizeToClean());
+    ASSERT_TRUE(!vlog_manager1.HasVlogOverSizeToClean());
 }
 
 TEST(DBTest, ReadWrite) {

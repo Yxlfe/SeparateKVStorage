@@ -137,14 +137,16 @@ DBImpl::DBImpl(const Options& raw_options, const std::string& dbname)
       vlog_head_(0),
       check_log_(0),
       check_point_(0),
-      drop_count_(0),
+      // drop_count_(0),
+      drop_size_(0),
       recover_clean_vlog_number_(0),
       recover_clean_pos_(0),
-      vlog_manager_(options_.clean_threshold),
+      vlog_manager_(options_.clean_threshold, options_.min_clean_threshold),
       seed_(0),
       tmp_batch_(new WriteBatch),
       bg_compaction_scheduled_(false),
       bg_clean_scheduled_(false),
+      // active_threads_(0),
       manual_compaction_(NULL) {
   has_imm_.Release_Store(NULL);
   // Reserve ten files or so for other uses and give the rest to TableCache.
@@ -152,24 +154,29 @@ DBImpl::DBImpl(const Options& raw_options, const std::string& dbname)
   table_cache_ = new TableCache(dbname_, &options_, table_cache_size);
   versions_ = new VersionSet(dbname_, &options_, table_cache_,
                              &internal_comparator_);
+  std::cout << "zc options_.clean_threshold = " << options_.clean_threshold 
+            << " ,options_.min_clean_threshold = " << options_.min_clean_threshold
+            << std::endl;
 }
 
 DBImpl::~DBImpl() {
   // Wait for background work to finish
   mutex_.Lock();
-  std::cout << "zc " << "final cur_vlog = " << GetVlogNumber() << std::endl;
+  std::cout << "zc " << "before shutting_down_ final cur_vlog = " << GetVlogNumber() << std::endl;
   shutting_down_.Release_Store(this);  // Any non-NULL value is ok
   while (bg_compaction_scheduled_ || bg_clean_scheduled_) {//还得等clean线程退出
     bg_cv_.Wait();
   }
-  if(drop_count_ > 0)
-  {
+  // if(drop_count_ > 0)
+  // if(drop_size_ > 0)
+  // {
       std::string vloginfo;
-      vlog_manager_.Serialize(vloginfo);
+      // vlog_manager_.Serialize(vloginfo);
+      vlog_manager_.SerializeVlogMetaData(vloginfo);      
       VersionEdit edit;
       edit.SetVlogInfo(vloginfo);
       versions_->LogAndApply(&edit, &mutex_);
-  }
+  // }
   mutex_.Unlock();
 
   if (db_lock_ != NULL) {
@@ -394,7 +401,7 @@ Status DBImpl::Recover(VersionEdit* edit, bool *save_manifest) {
   }
   if(!vloginfo.empty())
   {
-    vlog_manager_.Deserialize(vloginfo);
+    vlog_manager_.DeserializeVlogMetaData(vloginfo);
   }
 
   std::sort(logs.begin(), logs.end());
@@ -974,11 +981,14 @@ Status DBImpl::InstallCompactionResults(CompactionState* compact) {
         level + 1,
         out.number, out.file_size, out.smallest, out.largest);
   }
-  if(drop_count_ >= options_.log_dropCount_threshold)
+  //  if(drop_count_ >= options_.log_dropCount_threshold)
+  if(drop_size_ >= options_.log_dropSize_threshold)
   {
       std::string vloginfo;
-      vlog_manager_.Serialize(vloginfo);
-      drop_count_ = 0;
+      // vlog_manager_.Serialize(vloginfo);
+      vlog_manager_.SerializeVlogMetaData(vloginfo);
+      // drop_count_ = 0;
+      drop_size_ = 0;
       compact->compaction->edit()->SetVlogInfo(vloginfo);
   }
   return versions_->LogAndApply(compact->compaction->edit(), &mutex_);
@@ -1007,8 +1017,13 @@ Status DBImpl::DoCompactionWork(CompactionState* compact) {
   Status status;
   ParsedInternalKey ikey;
   std::string current_user_key;
+  //zc max min valid user key
+  // std::string current_min_valid_user_key;
+  // std::string current_max_valid_user_key;
+
   bool has_current_user_key = false;//是否是第一次出现这个user_key
-  uint64_t drop_count = 0;
+  // uint64_t drop_count = 0;
+  uint64_t drop_size = 0;
   SequenceNumber last_sequence_for_key = kMaxSequenceNumber;
   for (; input->Valid() && !shutting_down_.Acquire_Load(); ) {
     // Prioritize immutable compaction work
@@ -1050,6 +1065,13 @@ Status DBImpl::DoCompactionWork(CompactionState* compact) {
         has_current_user_key = true;
         //因为第一次出现的user_key不允许删除，所有将last_sequence_for_key设为最大值
         last_sequence_for_key = kMaxSequenceNumber;
+        uint32_t vlog_numb;
+        uint64_t size;
+        Slice value = input->value();
+        GetVarint64(&value, &size);
+        GetVarint32(&value, &vlog_numb);
+                
+        // vlog_manager_.AddValidInfo(vlog_numb, current_user_key);
       }
 
       if (last_sequence_for_key <= compact->smallest_snapshot) {
@@ -1063,8 +1085,9 @@ Status DBImpl::DoCompactionWork(CompactionState* compact) {
           Slice value = input->value();
           GetVarint64(&value, &size);
           GetVarint32(&value, &vlog_numb);
-          vlog_manager_.AddDropCount(vlog_numb);
-          drop_count++;
+          vlog_manager_.AddDropInfo(vlog_numb, size);
+          // drop_count++;
+          drop_size += size;
         drop = true;    // (A)
       } else if (ikey.type == kTypeDeletion &&
                  ikey.sequence <= compact->smallest_snapshot &&
@@ -1151,9 +1174,12 @@ Status DBImpl::DoCompactionWork(CompactionState* compact) {
   stats_[compact->compaction->level() + 1].Add(stats);
 
   if (status.ok()) {
-    drop_count_ += drop_count;
+    // drop_count_ += drop_count;
+    drop_size_ += drop_size;
     status = InstallCompactionResults(compact);
     // 检查是否达到垃圾回收的临界点
+
+
     MaybeScheduleClean();
   }
   if (!status.ok()) {
@@ -1282,7 +1308,7 @@ Status DBImpl::Get(const ReadOptions& options,
 
 Status DBImpl::RealValue(Slice val_ptr, std::string* value)
 {
-// MutexLock l(&mutex_);//因为vlog_reader->Read不是线程安全的，有没有什么优化呢,就是每个vlog_reader一把锁
+    // MutexLock l(&mutex_);//因为vlog_reader->Read不是线程安全的，有没有什么优化呢,就是每个vlog_reader一把锁
     Status s;
     uint32_t file_numb;
     uint64_t pos, size;
@@ -1412,9 +1438,16 @@ Status DBImpl::Write(const WriteOptions& options, WriteBatch* my_batch) {
         }
       }
      vlog_head_ += head_size;
+
+      // std::cout << "zc before WriteBatchInternal::ByteSize(batch) = " << WriteBatchInternal::ByteSize(updates) << std::endl;
       if (status.ok()) {
         status = WriteBatchInternal::InsertInto(updates, mem_, vlog_head_, logfile_number_);//vlog_head_代表每条kv对在vlog中的位置
       }
+      // std::cout << "zc after WriteBatchInternal::ByteSize(batch) = " << WriteBatchInternal::ByteSize(updates) << std::endl << std::endl;
+
+      //增加每个vlog文件的key范围统计信息
+      // AddValidInfoManager(updates, head_size, vlog_head_);
+
       mutex_.Lock();
       if (sync_error) {
         // The state of the log file is indeterminate: the log record we
@@ -1445,6 +1478,51 @@ Status DBImpl::Write(const WriteOptions& options, WriteBatch* my_batch) {
   }
 
   return status;
+}
+
+void DBImpl::AddValidInfoManager(WriteBatch* batch, int head_size, uint64_t vlog_offset)
+{
+  static int counts = 0;
+  static uint64_t countSize = 0;
+  static uint64_t last_logfile_number = logfile_number_;
+  static uint64_t last_vlog_offset = 0;
+  if(last_logfile_number == logfile_number_)
+  {
+    counts += WriteBatchInternal::Count(batch);
+    countSize += WriteBatchInternal::ByteSize(batch);
+    countSize += head_size;
+    last_vlog_offset = vlog_offset;
+  }
+  else
+  {
+    std::cout << "zc DBImpl::AddValidInfoManager logfile_number_ = " 
+            << last_logfile_number 
+            << " ,counts = "
+            << counts
+            << " ,size(B) = "
+            << countSize
+            << " ,offset(B) = "
+            << last_vlog_offset
+            << std::endl;
+    last_logfile_number = logfile_number_;
+    counts = 0;
+    countSize = 0;
+    last_vlog_offset = 0;
+  }
+
+  uint64_t size = WriteBatchInternal::ByteSize(batch);//size是整个batch的长度，包括batch头
+  uint64_t pos = 0;//是相对batch起始位置的偏移
+  Slice key,value;
+  while(pos < size)//遍历batch看哪些kv有效
+  {
+      bool isDel = false;
+      Status s =WriteBatchInternal::ParseRecord(batch, pos, key, value, isDel);//解析完一条kv后pos是下一条kv的pos
+      assert(s.ok());
+      if(!isDel)
+      {
+        vlog_manager_.AddValidInfo(logfile_number_, key.ToString());
+      }
+  }
 }
 
 // REQUIRES: Writer list must be non-empty
@@ -1598,7 +1676,7 @@ void DBImpl::CleanVlog()
     mutex_.Unlock();
 }
 
-void DBImpl::MaybeScheduleClean(bool isManuaClean)
+void DBImpl::MaybeScheduleClean(bool isManualClean)
 {
     mutex_.AssertHeld();
     if(bg_clean_scheduled_)
@@ -1607,17 +1685,28 @@ void DBImpl::MaybeScheduleClean(bool isManuaClean)
     else if(!bg_error_.ok())
     {
     }
-    else if(vlog_manager_.HasVlogToClean() || isManuaClean)
+    // else if(vlog_manager_.HasVlogToClean() || isManuaClean)
+    else if(vlog_manager_.HasVlogOverSizeToClean() || isManualClean)
     {
         bg_clean_scheduled_ = true;
-        if(!isManuaClean)
+        if(!isManualClean)
         {
+            // mutex_.lock();
+            // for (const auto& element : current_sorted_cleaningVlogs_bySize_) {
     //    env_->Schedule(&DBImpl::BGClean, this);//不能是schedule，一个线程池.可能会死锁
+              // 添加断言，检查 active_threads_ 是否达到最大值
+            //   assert(active_threads_ < std::numeric_limits<uint64_t>::max());
+            //   active_threads_++;
+            //   mutex_.unlock();
+
+            //   env_->StartThreadMutiArg(&DBImpl::BGClean, this, element.first);
+            // }
+
             env_->StartThread(&DBImpl::BGClean, this);
         }
         else
         {
-            env_->StartThread(&DBImpl::BGCleanAll, this);
+            env_->StartThread(&DBImpl::BGManualCleanAll, this);
         }
     }
 }
@@ -1627,23 +1716,33 @@ void DBImpl::BGCleanRecover(void* db)
     reinterpret_cast<DBImpl*>(db)->BackgroundRecoverClean();
 }
 
-void DBImpl::BGCleanAll(void* db)
+void DBImpl::BGManualCleanAll(void* db)
 {
-    reinterpret_cast<DBImpl*>(db)->BackgroundCleanAll();
+    reinterpret_cast<DBImpl*>(db)->BackgroundManualCleanAll();
 }
+
+// void DBImpl::BGClean(void* db)
+// {
+//     // uint64_t clean_vlog_number = *static_cast<uint64_t*>(vlog_number);
+//     // DBImpl* dbimpl = reinterpret_cast<DBImpl*>(db);
+//     // dbimpl->BackgroundClean(clean_vlog_number);
+//     reinterpret_cast<DBImpl*>(db)->BackgroundClean();
+// }
 
 void DBImpl::BGClean(void* db)
 {
     reinterpret_cast<DBImpl*>(db)->BackgroundClean();
 }
 
-void DBImpl::BackgroundCleanAll()
+void DBImpl::BackgroundManualCleanAll()
 {
     VersionEdit edit;
     bool save_edit = false;
-    while(vlog_manager_.HasVlogToClean())
+    // while(vlog_manager_.HasVlogToClean())
+    while(vlog_manager_.HasVlogOverSizeToClean())
     {
-        uint64_t clean_vlog_number = vlog_manager_.GetVlogToClean();
+        // uint64_t clean_vlog_number = vlog_manager_.GetVlogToClean();
+        uint64_t clean_vlog_number = vlog_manager_.GetSortedVlogToClean();
         GarbageCollector garbager(this);
         garbager.SetVlog(clean_vlog_number);
         
@@ -1660,7 +1759,9 @@ void DBImpl::BackgroundCleanAll()
             mutex_.Unlock();
         }
         else
-            vlog_manager_.RemoveCleaningVlog(clean_vlog_number);
+            // vlog_manager_.RemoveCleaningVlog(clean_vlog_number);
+            vlog_manager_.RemoveSortedCleaningVlog(clean_vlog_number);
+
         if(shutting_down_.Acquire_Load() || !bg_error_.ok())
             break;
     }
@@ -1686,7 +1787,9 @@ void DBImpl::BackgroundCleanAll()
             mutex_.Unlock();
         }
         else
-            vlog_manager_.RemoveCleaningVlog(*iter);
+            // vlog_manager_.RemoveCleaningVlog(*iter);
+            vlog_manager_.RemoveSortedCleaningVlog(*iter);            
+            
     }
     mutex_.Lock();
     bg_clean_scheduled_ = false;
@@ -1695,30 +1798,95 @@ void DBImpl::BackgroundCleanAll()
     mutex_.Unlock();
 }
 
+// void DBImpl::BackgroundClean()
+// {
+//     GarbageCollector garbager(this);
+//     // uint64_t clean_vlog_number = vlog_manager_.GetVlogToClean();
+//     uint64_t clean_vlog_number = vlog_manager_.GetSortedVlogToClean();
+//     garbager.SetVlog(clean_vlog_number);
+//     VersionEdit edit;
+//     bool save_edit = false;
+    
+//     GcStats gc_stats;
+//     const uint64_t start_micros = env_->NowMicros();
+//     garbager.BeginGarbageCollect(&edit, &save_edit, gc_stats.bytes_read, gc_stats.bytes_rewrite);
+//     gc_stats.micros = env_->NowMicros() - start_micros;
+//     // std::cout << "zc clean_vlog_number = " << clean_vlog_number << " gc_stats.micros = " << gc_stats.micros << std::endl;
+//     gc_status_[clean_vlog_number].Add(gc_stats);
+
+//     if(!save_edit)
+//       //  vlog_manager_.RemoveCleaningVlog(clean_vlog_number);
+//       vlog_manager_.RemoveSortedCleaningVlog(clean_vlog_number);
+
+//     mutex_.Lock();
+//     if(save_edit)
+//         versions_->LogAndApply(&edit, &mutex_);
+//     bg_clean_scheduled_ = false;
+//     if(shutting_down_.Acquire_Load())
+//         bg_cv_.SignalAll();
+//     mutex_.Unlock();
+// }
+
 void DBImpl::BackgroundClean()
 {
-    GarbageCollector garbager(this);
-    uint64_t clean_vlog_number = vlog_manager_.GetVlogToClean();
-    garbager.SetVlog(clean_vlog_number);
     VersionEdit edit;
     bool save_edit = false;
-    
-    GcStats gc_stats;
-    const uint64_t start_micros = env_->NowMicros();
-    garbager.BeginGarbageCollect(&edit, &save_edit, gc_stats.bytes_read, gc_stats.bytes_rewrite);
-    gc_stats.micros = env_->NowMicros() - start_micros;
-    std::cout << "zc clean_vlog_number = " << clean_vlog_number << " gc_stats.micros = " << gc_stats.micros << std::endl;
-    gc_status_[clean_vlog_number].Add(gc_stats);
+    // while(vlog_manager_.HasVlogToClean())
+    std::cout << "DBImpl::BackgroundClean GCVlogsSize = "
+            << vlog_manager_.GetCurrent_GCVlogsSize()
+            << std::endl;
+    while(vlog_manager_.IsCurrent_GCVlogs_Empty())
+    {
+        // uint64_t clean_vlog_number = vlog_manager_.GetVlogToClean();
+        uint64_t clean_vlog_number = vlog_manager_.GetSortedVlogToClean();
+        GarbageCollector garbager(this);
+        garbager.SetVlog(clean_vlog_number);
+        
+        GcStats gc_stats;
+        const uint64_t start_micros = env_->NowMicros();
+        garbager.BeginGarbageCollect(&edit, &save_edit, gc_stats.bytes_read, gc_stats.bytes_rewrite);
+        gc_stats.micros = env_->NowMicros() - start_micros;
 
-    if(!save_edit)
-       vlog_manager_.RemoveCleaningVlog(clean_vlog_number);
+
+        std::cout << "DBImpl::BackgroundClean clean_vlog_number = "
+        << clean_vlog_number
+        << " ,save_edit = "
+        << save_edit
+        << " ,gc_stats.bytes_rewrite = "
+        << gc_stats.bytes_rewrite
+        << std::endl;
+
+        mutex_.Lock();
+        if(save_edit)
+        {
+            // mutex_.Lock();
+            versions_->LogAndApply(&edit, &mutex_);
+            // mutex_.Unlock();
+        }
+        else
+        {
+            gc_status_[clean_vlog_number].Add(gc_stats);
+            // vlog_manager_.RemoveCleaningVlog(clean_vlog_number);
+            vlog_manager_.RemoveSortedCleaningVlog(clean_vlog_number);
+        }
+        mutex_.Unlock();
+
+        // if(shutting_down_.Acquire_Load() || !bg_error_.ok())
+        // {
+        //   if(shutting_down_.Acquire_Load())
+        //     std::cout << "shutting_down_ clean_vlog_number = "
+        //       << clean_vlog_number
+        //       << " ,save_edit = "
+        //       << save_edit
+        //       << std::endl;
+        //       break;
+        // }
+    }
 
     mutex_.Lock();
-    if(save_edit)
-        versions_->LogAndApply(&edit, &mutex_);
     bg_clean_scheduled_ = false;
-    if(shutting_down_.Acquire_Load())
-        bg_cv_.SignalAll();
+    has_cleaned_ = true;
+    bg_cv_.SignalAll();//要唤醒cleanvlog
     mutex_.Unlock();
 }
 
@@ -1735,9 +1903,9 @@ void DBImpl::BackgroundRecoverClean()
     gc_stats.micros = env_->NowMicros() - start_micros;
     gc_status_[recover_clean_vlog_number_].Add(gc_stats);
     
-    if(!save_edit)
-        vlog_manager_.RemoveCleaningVlog(recover_clean_vlog_number_);
-
+    if(!save_edit)    
+        // vlog_manager_.RemoveCleaningVlog(recover_clean_vlog_number_);
+        vlog_manager_.RemoveSortedCleaningVlog(recover_clean_vlog_number_);
     mutex_.Lock();
     if(save_edit)
         versions_->LogAndApply(&edit, &mutex_);
@@ -1795,22 +1963,19 @@ bool DBImpl::GetProperty(const Slice& property, std::string* value) {
     }
     snprintf(buf, sizeof(buf),
              "                               Gc\n"
-             "FileNumber   GcTime(mis) Read(MB) reWrite(MB)\n"
+             "FileNumber   GcTime(mis) Read(MB) reWrite(B)\n"
              "--------------------------------------------------\n"
              );
     value->append(buf);
     for (const auto& [fileNO, GcStats] : gc_status_) {
-      if (GcStats.micros > 0)
-      {
         snprintf(
             buf, sizeof(buf),
-            "%3ld %8.0ld %8.0f %9.0f\n",
+            "%3ld     %9.0lf   %8.0f   %9.0ld\n",
             fileNO,
-            GcStats.micros,
+            GcStats.micros / 1e6,
             GcStats.bytes_read / 1048576.0,
-            GcStats.bytes_rewrite / 1048576.0);
+            GcStats.bytes_rewrite);
         value->append(buf);
-      }
     }
     return true;
   } else if (in == "sstables") {
@@ -1916,6 +2081,12 @@ Status DB::Open(const Options& options, const std::string& dbname,
     edit.SetLogNumber(impl->logfile_number_);
     s = impl->versions_->LogAndApply(&edit, &impl->mutex_);
   }
+  
+  if(impl->recover_clean_vlog_number_ == 0)
+  {
+      std::cout << "last open has no unfinished clean_vlog_number" << std::endl;
+  }
+
   if (s.ok() && impl->recover_clean_vlog_number_ > 0 &&
           impl->vlog_manager_.NeedRecover(impl->recover_clean_vlog_number_)) {
     impl->bg_clean_scheduled_ = true;

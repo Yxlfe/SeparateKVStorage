@@ -16,7 +16,12 @@ void GarbageCollector::SetVlog(uint64_t vlog_number, uint64_t garbage_beg_pos)
     garbage_pos_ = garbage_beg_pos;
 }
 
-void GarbageCollector::BeginGarbageCollect(VersionEdit* edit, bool* save_edit, uint64_t& read_size, uint64_t& rewrite_size)
+void GarbageCollector::SetRewriteKeyRange(std::string rewriteSmallestKey, std::string rewritelargestKey)
+{
+
+}
+
+void GarbageCollector::BeginGarbageCollect(VersionEdit* edit, bool* save_edit, uint64_t& read_size, uint64_t& rewrite_size, std::string rewriteSmallestKey, std::string rewritelargestKey)
 {
     *save_edit = false;
     uint64_t garbage_pos = garbage_pos_;
@@ -36,7 +41,8 @@ void GarbageCollector::BeginGarbageCollect(VersionEdit* edit, bool* save_edit, u
     WriteBatch batch, clean_valid_batch;
     std::string val;
     bool isEndOfFile = false;
-    while(!db_->IsShutDown())//db关了
+    while(!isEndOfFile)
+    // while(!db_->IsShutDown())//db关了
     {
         int head_size = 0;
         if(!vlog_reader_->ReadRecord(&record, &str, head_size))//读日志记录读取失败了
@@ -53,6 +59,8 @@ void GarbageCollector::BeginGarbageCollect(VersionEdit* edit, bool* save_edit, u
         uint64_t old_garbage_pos = garbage_pos_;
         while(pos < size)//遍历batch看哪些kv有效
         {
+            key.clear();
+            value.clear();
             bool isDel = false;
             Status s =WriteBatchInternal::ParseRecord(&batch, pos, key, value, isDel);//解析完一条kv后pos是下一条kv的pos
             assert(s.ok());
@@ -70,15 +78,24 @@ void GarbageCollector::BeginGarbageCollect(VersionEdit* edit, bool* save_edit, u
                 if(item_pos + item_size == garbage_pos_ && file_numb == vlog_number_ )
                 {
                     clean_valid_batch.Put(key, value);
-                    rewrite_size += key.size() + value.size();
+                    // rewrite_size += key.size();
+                    // rewrite_size += value.size();
+                    // rewrite_size += 20;
                 }
             }
         }
         assert(pos == size);
+
         if(WriteBatchInternal::ByteSize(&clean_valid_batch) > db_->options_.clean_write_buffer_size)
         {//clean_write_buffer_size必须要大于12才行，12是batch的头部长，创建batch或者clear batch后的初始大小就是12
+            // std::cout << "zc GarbageCollector::BeginGarbageCollect clean_valid_batch.size = "
+            // << rewrite_size
+            // << " ,vlog_number = "
+            // << vlog_number_
+            // << std::endl;
             Status s = db_->Write(write_options, &clean_valid_batch);
             assert(s.ok());
+            rewrite_size += WriteBatchInternal::ByteSize(&clean_valid_batch);
             clean_valid_batch.Clear();
         }
     }

@@ -19,6 +19,19 @@ VWriter::VWriter(WritableFile* dest)
 VWriter::~VWriter() {
 }
 
+//zc 只是修改暂时没有应用接口
+Status VWriter::AddRecord(const Slice& slice){
+  const char* ptr = slice.data();
+  size_t left = slice.size();
+
+  Status s = dest_->Append(Slice(ptr, left));//写一条物理记录就刷一次
+  if (s.ok()) {
+    s = dest_->Flush();
+  }
+
+  return s;
+}
+
 Status VWriter::AddRecord(const Slice& slice, int& head_size) {
   const char* ptr = slice.data();
   size_t left = slice.size();
