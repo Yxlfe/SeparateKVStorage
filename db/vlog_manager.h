@@ -74,7 +74,7 @@ class VlogManager
         bool DeserializeVlogMetaData(std::string& val);
         bool NeedRecover(uint64_t vlog_numb);
         //zc
-        void DumpCurrentSortedCleaningVlogsBySize() const;
+        void DumpCurrentSortedCleaningVlogsBySize();
     private:
         std::unordered_map<uint64_t, VlogInfo> manager_;
         std::unordered_set<uint64_t> cleaning_vlog_set_;

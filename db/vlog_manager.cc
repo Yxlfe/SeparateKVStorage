@@ -222,8 +222,11 @@ void VlogManager::DumpDropCount()
     }
 
     // Dump 接口，用于打印键值对
-    void VlogManager::DumpCurrentSortedCleaningVlogsBySize() const {
+    void VlogManager::DumpCurrentSortedCleaningVlogsBySize(){
         std::cout << "Dumping current_sorted_cleaningVlogs_bySize_:" << std::endl;
+        std::cout << "DBImpl::BackgroundClean GCVlogsSize = "
+        << GetCurrent_GCVlogsSize()
+        << std::endl;
         for (const auto& pair : current_sorted_cleaningVlogs_bySize_) {
             std::cout << "VlogNumber: " << pair.first << ", Total invalidSize: " << pair.second << std::endl;
         }

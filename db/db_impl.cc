@@ -177,7 +177,18 @@ DBImpl::~DBImpl() {
       edit.SetVlogInfo(vloginfo);
       versions_->LogAndApply(&edit, &mutex_);
   // }
+
   mutex_.Unlock();
+
+  std::string stats;
+  if(GetProperty("leveldb.stats",&stats) == true)
+  {
+    std::cout << stats << std::endl;
+  }
+  else
+  {
+    std::cout << "GetProperty fail" << std::endl;
+  }
 
   if (db_lock_ != NULL) {
     env_->UnlockFile(db_lock_);
@@ -1832,9 +1843,9 @@ void DBImpl::BackgroundClean()
     VersionEdit edit;
     bool save_edit = false;
     // while(vlog_manager_.HasVlogToClean())
-    std::cout << "DBImpl::BackgroundClean GCVlogsSize = "
-            << vlog_manager_.GetCurrent_GCVlogsSize()
-            << std::endl;
+    // std::cout << "DBImpl::BackgroundClean GCVlogsSize = "
+    //         << vlog_manager_.GetCurrent_GCVlogsSize()
+    //         << std::endl;
     while(vlog_manager_.IsCurrent_GCVlogs_Empty())
     {
         // uint64_t clean_vlog_number = vlog_manager_.GetVlogToClean();
@@ -1848,20 +1859,20 @@ void DBImpl::BackgroundClean()
         gc_stats.micros = env_->NowMicros() - start_micros;
 
 
-        std::cout << "DBImpl::BackgroundClean clean_vlog_number = "
-        << clean_vlog_number
-        << " ,save_edit = "
-        << save_edit
-        << " ,gc_stats.bytes_rewrite = "
-        << gc_stats.bytes_rewrite
-        << std::endl;
+        // std::cout << "DBImpl::BackgroundClean clean_vlog_number = "
+        // << clean_vlog_number
+        // << " ,save_edit = "
+        // << save_edit
+        // << " ,gc_stats.bytes_rewrite = "
+        // << gc_stats.bytes_rewrite
+        // << std::endl;
 
-        mutex_.Lock();
+
         if(save_edit)
         {
-            // mutex_.Lock();
+            mutex_.Lock();
             versions_->LogAndApply(&edit, &mutex_);
-            // mutex_.Unlock();
+            mutex_.Unlock();
         }
         else
         {
@@ -1869,7 +1880,7 @@ void DBImpl::BackgroundClean()
             // vlog_manager_.RemoveCleaningVlog(clean_vlog_number);
             vlog_manager_.RemoveSortedCleaningVlog(clean_vlog_number);
         }
-        mutex_.Unlock();
+
 
         // if(shutting_down_.Acquire_Load() || !bg_error_.ok())
         // {
@@ -1883,6 +1894,7 @@ void DBImpl::BackgroundClean()
         // }
     }
 
+    // std::cout << "DBImpl::BackgroundClean wait unlock" << std::endl;
     mutex_.Lock();
     bg_clean_scheduled_ = false;
     has_cleaned_ = true;
