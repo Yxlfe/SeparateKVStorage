@@ -16,12 +16,37 @@ void GarbageCollector::SetVlog(uint64_t vlog_number, uint64_t garbage_beg_pos)
     garbage_pos_ = garbage_beg_pos;
 }
 
-void GarbageCollector::SetRewriteKeyRange(std::string rewriteSmallestKey, std::string rewritelargestKey)
-{
+// void GarbageCollector::SetRewriteKeyRange(std::string rewriteSmallestKey, std::string rewritelargestKey)
+// {
+//     auto it = rewriteKeyRange.find(vlog_number_);
 
-}
+//     if (it != rewriteKeyRange.end()) {
+//         auto& keyInfo = it->second;
+//         keyInfo.rewriteCount++;
+//         // Compare and update rewriteSmallestKey if the new key is smaller
+//         if (rewriteSmallestKey < keyInfo.rewriteSmallestKey) {
+//             keyInfo.rewriteSmallestKey = rewriteSmallestKey;
+//             keyInfo.rewriteSmallestKeySize = rewriteSmallestKey.size();
+//         }
 
-void GarbageCollector::BeginGarbageCollect(VersionEdit* edit, bool* save_edit, uint64_t& read_size, uint64_t& rewrite_size, std::string rewriteSmallestKey, std::string rewritelargestKey)
+//         // Compare and update rewritelargestKey if the new key is larger
+//         if (rewritelargestKey > keyInfo.rewritelargestKey) {
+//             keyInfo.rewritelargestKey = rewritelargestKey;
+//             keyInfo.rewritelargestKeySize = rewritelargestKey.size();
+//         }
+//     } else {
+//         rewriteKeyInfo newKeyInfo;
+//         newKeyInfo.rewriteCount = 0; 
+//         newKeyInfo.rewriteSmallestKey = rewriteSmallestKey;
+//         newKeyInfo.rewritelargestKey = rewritelargestKey;
+//         newKeyInfo.rewriteSmallestKeySize = rewriteSmallestKey.size();
+//         newKeyInfo.rewritelargestKeySize = rewritelargestKey.size();
+//         rewriteKeyRange[vlog_number_] = newKeyInfo;
+//     }
+
+// }
+
+void GarbageCollector::BeginGarbageCollect(VersionEdit* edit, bool* save_edit, uint64_t& read_size, uint64_t& rewrite_size)
 {
     *save_edit = false;
     uint64_t garbage_pos = garbage_pos_;
@@ -41,8 +66,7 @@ void GarbageCollector::BeginGarbageCollect(VersionEdit* edit, bool* save_edit, u
     WriteBatch batch, clean_valid_batch;
     std::string val;
     bool isEndOfFile = false;
-    while(!isEndOfFile)
-    // while(!db_->IsShutDown())//db关了
+    while(!db_->IsShutDown())//db关了
     {
         int head_size = 0;
         if(!vlog_reader_->ReadRecord(&record, &str, head_size))//读日志记录读取失败了
@@ -134,6 +158,168 @@ void GarbageCollector::BeginGarbageCollect(VersionEdit* edit, bool* save_edit, u
             vlog_reader_->DeallocateDiskSpace(garbage_pos, garbage_pos_ - garbage_pos);
             edit->SetTailInfo(vlog_number_, garbage_pos_);
             *save_edit = true;
+        }
+    }
+}
+
+
+void GarbageCollector::BGCleanBeginGarbageCollect(bool* shutdown, uint64_t& read_size, uint64_t& rewrite_size)
+{
+    *shutdown = false;
+    uint64_t garbage_pos = garbage_pos_;
+    Slice record;
+    std::string str;
+    WriteOptions write_options;
+    if(garbage_pos_ > 0)
+    {
+        if(!vlog_reader_->SkipToPos(garbage_pos_))//从指定位置开始回收
+        {
+            Log(db_->options_.info_log,"clean vlog %lu false because of SkipToPos %lu false",vlog_number_,garbage_pos_);
+        }
+    }
+    Log(db_->options_.info_log,"begin clean from %lu in vlog%lu\n", garbage_pos_, vlog_number_);
+
+    uint64_t rewriteCounts = 0;
+    Slice key,value;
+    WriteBatch batch, clean_valid_batch;
+    std::string val;
+    bool isEndOfFile = false;
+    // while(!isEndOfFile)
+    while(!db_->IsShutDown())//db关了
+    {
+        int head_size = 0;
+        if(!vlog_reader_->ReadRecord(&record, &str, head_size))//读日志记录读取失败了
+        {
+            isEndOfFile = true;
+            break;
+        }
+
+        garbage_pos_ += head_size;
+        WriteBatchInternal::SetContents(&batch, record);//会把record的内容拷贝到batch中去
+        ReadOptions read_options;
+        uint64_t size = record.size();//size是整个batch的长度，包括batch头
+        uint64_t pos = 0;//是相对batch起始位置的偏移
+        uint64_t old_garbage_pos = garbage_pos_;
+        while(pos < size)//遍历batch看哪些kv有效
+        {
+            key.clear();
+            value.clear();
+            bool isDel = false;
+            Status s =WriteBatchInternal::ParseRecord(&batch, pos, key, value, isDel);//解析完一条kv后pos是下一条kv的pos
+            assert(s.ok());
+            garbage_pos_ = old_garbage_pos + pos;
+
+            //log文件里的delete记录可以直接丢掉，因为sst文件会记录
+            if(!isDel && db_->GetPtr(read_options, key, &val).ok())
+            {
+                Slice val_ptr(val);
+                uint32_t file_numb;
+                uint64_t item_pos, item_size;
+                GetVarint64(&val_ptr, &item_size);
+                GetVarint32(&val_ptr, &file_numb);
+                GetVarint64(&val_ptr, &item_pos);
+                if(item_pos + item_size == garbage_pos_ && file_numb == vlog_number_ )
+                {
+                    clean_valid_batch.Put(key, value);
+                    rewriteCounts++;
+                    // db_->vlog_manager_.AddValidInfo(vlog_number_, key.ToString());
+                    // rewrite_size += key.size();
+                    // rewrite_size += value.size();
+                    // rewrite_size += 20;
+                }
+            }
+        }
+        assert(pos == size);
+
+        // if(WriteBatchInternal::ByteSize(&clean_valid_batch) > db_->options_.clean_write_buffer_size)
+        // {//clean_write_buffer_size必须要大于12才行，12是batch的头部长，创建batch或者clear batch后的初始大小就是12
+        //     // std::cout << "zc GarbageCollector::BeginGarbageCollect clean_valid_batch.size = "
+        //     // << rewrite_size
+        //     // << " ,vlog_number = "
+        //     // << vlog_number_
+        //     // << std::endl;
+        //     Status s = db_->Write(write_options, &clean_valid_batch);
+        //     assert(s.ok());
+        //     rewrite_size += WriteBatchInternal::ByteSize(&clean_valid_batch);
+        //     clean_valid_batch.Clear();
+        // }
+    }
+
+    if(isEndOfFile)
+    {
+        if(WriteBatchInternal::ByteSize(&clean_valid_batch) > db_->options_.clean_write_buffer_size)
+        {
+            Status s = db_->ReWrite(write_options, &clean_valid_batch);
+            assert(s.ok());
+            if(s.ok())
+            {
+                rewrite_size += WriteBatchInternal::ByteSize(&clean_valid_batch);
+            }
+            clean_valid_batch.Clear();
+        }
+
+        // std::cout << "zc GarbageCollector::BeginGarbageCollect GcvlogNumber = "
+        //         << vlog_number_
+        //         << " ,rewriteCounts = "
+        //         << rewriteCounts
+        //         << std::endl;        
+    }
+
+
+
+
+#ifndef NDEBUG
+    Log(db_->options_.info_log,"tail is %lu, last key is %s, ;last value is %s\n", garbage_pos_,key.data(),value.data());
+    if(db_->IsShutDown())
+        Log(db_->options_.info_log," clean stop by shutdown\n");
+    else if(isEndOfFile)
+        Log(db_->options_.info_log," clean stop by read end\n");
+    else
+        Log(db_->options_.info_log," clean stop by unknown reason\n");
+#endif
+    if(WriteBatchInternal::Count(&clean_valid_batch) > 0)
+    {
+        Status s = db_->Write(write_options, &clean_valid_batch);
+        assert(s.ok());
+        clean_valid_batch.Clear();
+    }
+    
+    read_size += garbage_pos_ - garbage_pos;
+
+
+    if(garbage_pos_ - garbage_pos > 0)
+    {
+        if(isEndOfFile)
+        {
+            std::string file_name = VLogFileName(db_->dbname_, vlog_number_);
+            db_->env_->DeleteFile(file_name);
+            Log(db_->options_.info_log,"clean vlog %lu ok and delete it\n", vlog_number_);
+            // if(WriteBatchInternal::ByteSize(&clean_valid_batch) > db_->options_.clean_write_buffer_size)
+            // {//clean_write_buffer_size必须要大于12才行，12是batch的头部长，创建batch或者clear batch后的初始大小就是12
+            //     // std::cout << "zc GarbageCollector::BeginGarbageCollect clean_valid_batch.size = "
+            //     // << rewrite_size
+            //     // << " ,vlog_number = "
+            //     // << vlog_number_
+            //     // << std::endl;
+            //     Status s = db_->Write(write_options, &clean_valid_batch, true);
+            //     assert(s.ok());
+            //     rewrite_size += WriteBatchInternal::ByteSize(&clean_valid_batch);
+            //     clean_valid_batch.Clear();
+            // }
+
+            // std::cout << "zc GarbageCollector::BeginGarbageCollect GcvlogNumber = "
+            //         << vlog_number_
+            //         << " ,rewriteCounts = "
+            //         << rewriteCounts
+            //         << std::endl;
+
+            *shutdown = false;
+        }
+        else
+        {
+            // vlog_reader_->DeallocateDiskSpace(garbage_pos, garbage_pos_ - garbage_pos);
+            // edit->SetTailInfo(vlog_number_, garbage_pos_);
+            *shutdown = true;
         }
     }
 }

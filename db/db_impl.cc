@@ -416,11 +416,6 @@ Status DBImpl::Recover(VersionEdit* edit, bool *save_manifest) {
   }
 
   std::sort(logs.begin(), logs.end());
-  
-  std::cout << "zc " << std::endl;
-  for (auto log : logs) {
-        std::cout << log << std::endl;
-  }
 
   if(log_number > 0 && !logs.empty())
   {
@@ -1448,16 +1443,13 @@ Status DBImpl::Write(const WriteOptions& options, WriteBatch* my_batch) {
           sync_error = true;
         }
       }
-     vlog_head_ += head_size;
+      vlog_head_ += head_size;
 
       // std::cout << "zc before WriteBatchInternal::ByteSize(batch) = " << WriteBatchInternal::ByteSize(updates) << std::endl;
       if (status.ok()) {
         status = WriteBatchInternal::InsertInto(updates, mem_, vlog_head_, logfile_number_);//vlog_head_代表每条kv对在vlog中的位置
       }
       // std::cout << "zc after WriteBatchInternal::ByteSize(batch) = " << WriteBatchInternal::ByteSize(updates) << std::endl << std::endl;
-
-      //增加每个vlog文件的key范围统计信息
-      // AddValidInfoManager(updates, head_size, vlog_head_);
 
       mutex_.Lock();
       if (sync_error) {
@@ -1491,39 +1483,128 @@ Status DBImpl::Write(const WriteOptions& options, WriteBatch* my_batch) {
   return status;
 }
 
+Status DBImpl::ReWrite(const WriteOptions& options, WriteBatch* my_batch) {
+  Writer w(&mutex_);
+  w.batch = my_batch;
+  w.sync = options.sync;
+  w.done = false;
+
+
+  MutexLock l(&mutex_);
+  writers_.push_back(&w);
+  while (!w.done && &w != writers_.front()) {
+    w.cv.Wait();
+  }
+
+  if (w.done) {
+    return w.status;
+  }
+
+  // May temporarily unlock and wait.
+  Status status = MakeRoomForWrite(my_batch == NULL);
+  uint64_t last_sequence = versions_->LastSequence();
+  Writer* last_writer = &w;
+  if (status.ok() && my_batch != NULL) {  // NULL batch is for compactions
+    WriteBatch* updates = BuildBatchGroup(&last_writer);
+    WriteBatchInternal::SetSequence(updates, last_sequence + 1);
+    last_sequence += WriteBatchInternal::Count(updates);
+
+    // Add to log and apply to memtable.  We can release the lock
+    // during this phase since &w is currently responsible for logging
+    // and protects against concurrent loggers and concurrent writes
+    // into mem_.
+    {
+      mutex_.Unlock();
+    int head_size = 0;
+      status = vlog_->AddRecord(WriteBatchInternal::Contents(updates), head_size);
+      bool sync_error = false;
+      if (status.ok() && options.sync) {
+        status = vlogfile_->Sync();
+        if (!status.ok()) {
+          sync_error = true;
+        }
+      }
+      vlog_head_ += head_size;
+
+      // std::cout << "zc before WriteBatchInternal::ByteSize(batch) = " << WriteBatchInternal::ByteSize(updates) << std::endl;
+      if (status.ok()) {
+        status = WriteBatchInternal::InsertInto(updates, mem_, vlog_head_, logfile_number_);//vlog_head_代表每条kv对在vlog中的位置
+      }
+      // std::cout << "zc after WriteBatchInternal::ByteSize(batch) = " << WriteBatchInternal::ByteSize(updates) << std::endl << std::endl;
+
+      //增加每个vlog文件的key范围统计信息
+
+      AddValidInfoManager(updates, head_size, vlog_head_);
+
+
+      mutex_.Lock();
+      if (sync_error) {
+        // The state of the log file is indeterminate: the log record we
+        // just added may or may not show up when the DB is re-opened.
+        // So we force the DB into a mode where all future writes fail.
+        RecordBackgroundError(status);
+      }
+    }
+
+    if (updates == tmp_batch_) tmp_batch_->Clear();
+
+    versions_->SetLastSequence(last_sequence);
+  }
+
+  while (true) {
+    Writer* ready = writers_.front();
+    writers_.pop_front();
+    if (ready != &w) {
+      ready->status = status;
+      ready->done = true;
+      ready->cv.Signal();
+    }
+    if (ready == last_writer) break;
+  }
+
+  // Notify new head of write queue
+  if (!writers_.empty()) {
+    writers_.front()->cv.Signal();
+  }
+
+  return status;
+}
+
 void DBImpl::AddValidInfoManager(WriteBatch* batch, int head_size, uint64_t vlog_offset)
 {
-  static int counts = 0;
-  static uint64_t countSize = 0;
-  static uint64_t last_logfile_number = logfile_number_;
-  static uint64_t last_vlog_offset = 0;
-  if(last_logfile_number == logfile_number_)
-  {
-    counts += WriteBatchInternal::Count(batch);
-    countSize += WriteBatchInternal::ByteSize(batch);
-    countSize += head_size;
-    last_vlog_offset = vlog_offset;
-  }
-  else
-  {
-    std::cout << "zc DBImpl::AddValidInfoManager logfile_number_ = " 
-            << last_logfile_number 
-            << " ,counts = "
-            << counts
-            << " ,size(B) = "
-            << countSize
-            << " ,offset(B) = "
-            << last_vlog_offset
-            << std::endl;
-    last_logfile_number = logfile_number_;
-    counts = 0;
-    countSize = 0;
-    last_vlog_offset = 0;
-  }
+  // static int counts = 0;
+  // static uint64_t countSize = 0;
+  // static uint64_t last_logfile_number = logfile_number_;
+  // static uint64_t last_vlog_offset = 0;
+  // if(last_logfile_number == logfile_number_)
+  // {
+  //   counts += WriteBatchInternal::Count(batch);
+  //   countSize += WriteBatchInternal::ByteSize(batch);
+  //   countSize += head_size;
+  //   last_vlog_offset = vlog_offset;
+  // }
+  // else
+  // {
+  //   std::cout << "zc DBImpl::AddValidInfoManager logfile_number_ = " 
+  //           << last_logfile_number 
+  //           << " ,counts = "
+  //           << counts
+  //           << " ,size(B) = "
+  //           << countSize
+  //           << " ,offset(B) = "
+  //           << last_vlog_offset
+  //           << std::endl;
+    // last_logfile_number = logfile_number_;
+  //   counts = 0;
+  //   countSize = 0;
+  //   last_vlog_offset = 0;
+  // }
+
 
   uint64_t size = WriteBatchInternal::ByteSize(batch);//size是整个batch的长度，包括batch头
   uint64_t pos = 0;//是相对batch起始位置的偏移
   Slice key,value;
+  uint64_t recordCounts = 0;
   while(pos < size)//遍历batch看哪些kv有效
   {
       bool isDel = false;
@@ -1533,7 +1614,14 @@ void DBImpl::AddValidInfoManager(WriteBatch* batch, int head_size, uint64_t vlog
       {
         vlog_manager_.AddValidInfo(logfile_number_, key.ToString());
       }
+      recordCounts++;
   }
+  vlog_manager_.AddValidDensity(logfile_number_);
+  std::cout << "zc DBImpl::AddValidInfoManager logfile_number_ = " 
+            << logfile_number_ 
+            << " ,rewrite counts = "
+            << recordCounts
+            << std::endl;
 }
 
 // REQUIRES: Writer list must be non-empty
@@ -1596,14 +1684,14 @@ Status DBImpl::MakeRoomForWrite(bool force) {
       if(vlog_head_ >= options_.max_vlog_size)
       {
     //新生成的vlog文件的编号会和imm生成的sst文件一起应用到version中，见CompactMemTable
-         uint32_t new_log_number = versions_->NewVlogNumber();//对于newdb且不能重用上次的log(即不能logandapply新生成的log)，会有bug
+         uint32_t new_log_number = versions_->NewVlogNumber();
          vlog_head_ = 0;
          WritableFile* vlfile;
          s = env_->NewWritableFile(VLogFileName(dbname_, new_log_number), &vlfile);
          if (!s.ok()) {
             versions_->ReuseVlogNumber(new_log_number);
  //           break;
- return s;
+            return s;
          }
          delete vlog_;
          delete vlogfile_;
@@ -1616,6 +1704,8 @@ Status DBImpl::MakeRoomForWrite(bool force) {
           vlog_manager_.AddVlog(new_log_number, vlog_reader);
           Log(options_.info_log, "new vlog %d...\n", new_log_number);
       }
+      
+      
   while (true) {
     if (!bg_error_.ok()) {
       // Yield previous error
@@ -1690,6 +1780,7 @@ void DBImpl::CleanVlog()
 void DBImpl::MaybeScheduleClean(bool isManualClean)
 {
     mutex_.AssertHeld();
+
     if(bg_clean_scheduled_)
     {
     }
@@ -1841,13 +1932,14 @@ void DBImpl::BackgroundManualCleanAll()
 void DBImpl::BackgroundClean()
 {
     VersionEdit edit;
-    bool save_edit = false;
-    // while(vlog_manager_.HasVlogToClean())
-    // std::cout << "DBImpl::BackgroundClean GCVlogsSize = "
-    //         << vlog_manager_.GetCurrent_GCVlogsSize()
-    //         << std::endl;
+    bool shutdown = false;
+
     while(vlog_manager_.IsCurrent_GCVlogs_Empty())
     {
+        // if(shutting_down_.Acquire_Load() || !bg_error_.ok())
+        // {
+        //   break;
+        // }
         // uint64_t clean_vlog_number = vlog_manager_.GetVlogToClean();
         uint64_t clean_vlog_number = vlog_manager_.GetSortedVlogToClean();
         GarbageCollector garbager(this);
@@ -1855,24 +1947,34 @@ void DBImpl::BackgroundClean()
         
         GcStats gc_stats;
         const uint64_t start_micros = env_->NowMicros();
-        garbager.BeginGarbageCollect(&edit, &save_edit, gc_stats.bytes_read, gc_stats.bytes_rewrite);
+        garbager.BGCleanBeginGarbageCollect(&shutdown, gc_stats.bytes_read, gc_stats.bytes_rewrite);
         gc_stats.micros = env_->NowMicros() - start_micros;
 
 
         // std::cout << "DBImpl::BackgroundClean clean_vlog_number = "
         // << clean_vlog_number
-        // << " ,save_edit = "
-        // << save_edit
+        // << " ,shutdown = "
+        // << shutdown
         // << " ,gc_stats.bytes_rewrite = "
         // << gc_stats.bytes_rewrite
         // << std::endl;
 
+        //每次GC完LogAndApply Vlog元数据信息
+        // if(save_edit)
+        // {
+        //     mutex_.Lock();
+        //     versions_->LogAndApply(&edit, &mutex_);
+        //     mutex_.Unlock();
+        //     gc_status_[clean_vlog_number].Add(gc_stats);
+        //     vlog_manager_.RemoveSortedCleaningVlog(clean_vlog_number);
+        // }
 
-        if(save_edit)
+        if(shutdown)
         {
-            mutex_.Lock();
-            versions_->LogAndApply(&edit, &mutex_);
-            mutex_.Unlock();
+            break;
+            // mutex_.Lock();
+            // versions_->LogAndApply(&edit, &mutex_);
+            // mutex_.Unlock();
         }
         else
         {
@@ -1880,21 +1982,14 @@ void DBImpl::BackgroundClean()
             // vlog_manager_.RemoveCleaningVlog(clean_vlog_number);
             vlog_manager_.RemoveSortedCleaningVlog(clean_vlog_number);
         }
-
-
+        
         // if(shutting_down_.Acquire_Load() || !bg_error_.ok())
         // {
-        //   if(shutting_down_.Acquire_Load())
-        //     std::cout << "shutting_down_ clean_vlog_number = "
-        //       << clean_vlog_number
-        //       << " ,save_edit = "
-        //       << save_edit
-        //       << std::endl;
-        //       break;
+        //   break;
         // }
+
     }
 
-    // std::cout << "DBImpl::BackgroundClean wait unlock" << std::endl;
     mutex_.Lock();
     bg_clean_scheduled_ = false;
     has_cleaned_ = true;
