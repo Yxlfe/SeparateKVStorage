@@ -27,6 +27,7 @@ namespace leveldb {
         v.valid_count_ = 0;
         v.valid_smallest_key_size_ = 0;
         v.valid_largest_key_size_ = 0;
+        v.valid_key_density_ = 0;
 
         // v.valid_count_ = 0;
         bool b = manager_.insert(std::make_pair(vlog_numb, v)).second;
@@ -90,6 +91,7 @@ void VlogManager::DumpDropCount()
         std::cout << "Valid Smallest Key: " << info.valid_smallest_key_ << std::endl;
         std::cout << "Valid Largest Key Size: " << info.valid_largest_key_size_ << std::endl;
         std::cout << "Valid Largest Key: " << info.valid_largest_key_ << std::endl;
+        std::cout << "Valid_Key_Density: " << info.valid_key_density_ << std::endl;
         std::cout << "----------------------------------------" << std::endl;
     }
 }
@@ -140,13 +142,26 @@ void VlogManager::DumpDropCount()
         }
     }
 
+    void VlogManager::AddValidDensity(uint64_t vlog_numb)
+    {
+        auto iter = manager_.find(vlog_numb);
+        if (iter != manager_.end()) {
+            iter->second.valid_key_density_ =  countStringsInclusive(iter->second.valid_smallest_key_, iter->second.valid_largest_key_) / iter->second.valid_count_;
+            std::cout << "VlogManager::AddValidInfo add vlog number = " 
+                      << iter->first 
+                      << " ,valid_key_density_ = "
+                      << iter->second.valid_key_density_
+                      << std::endl;        
+        }
+    }
+
     void VlogManager::AddValidInfo(uint64_t vlog_numb, std::string current_user_key)
     {
         auto iter = manager_.find(vlog_numb);
         if (iter != manager_.end()) {
             // 更新VlogInfo中的invalid_size_
             iter->second.valid_count_ ++;
-            if(iter->second.valid_smallest_key_size_ == 0 && iter->second.valid_largest_key_size_ == 0)
+            if(iter->second.valid_count_ == 0)
             {
                 iter->second.valid_largest_key_ = current_user_key;
                 iter->second.valid_smallest_key_ = current_user_key;
@@ -165,9 +180,11 @@ void VlogManager::DumpDropCount()
             }            
 
             iter->second.valid_smallest_key_size_ = current_user_key.size();
-            iter->second.valid_largest_key_size_ = current_user_key.size();    
+            iter->second.valid_largest_key_size_ = current_user_key.size();
         }
     }
+
+
 
     std::set<uint64_t> VlogManager::GetVlogsToClean(uint64_t clean_threshold)
     {
@@ -283,7 +300,7 @@ void VlogManager::DumpDropCount()
         std::unordered_map<uint64_t, VlogInfo>::iterator iter = manager_.begin();
         for(;iter != manager_.end();iter++)
         {
-            uint64_t size = 40 + iter->second.valid_smallest_key_size_ + iter->second.valid_largest_key_size_;
+            uint64_t size = 48 + iter->second.valid_smallest_key_size_ + iter->second.valid_largest_key_size_;
             uint64_t buf_offset = 0; 
             char buf[size];
             EncodeFixed64(buf + buf_offset, iter->first); 
@@ -299,7 +316,8 @@ void VlogManager::DumpDropCount()
             EncodeFixed64(buf + buf_offset, iter->second.valid_largest_key_size_);
             buf_offset += 8;
             memcpy(buf + buf_offset, iter->second.valid_largest_key_.data(), iter->second.valid_largest_key_size_);
-            // buf_offset += iter->second.valid_largest_key_size_;
+            buf_offset += iter->second.valid_largest_key_size_;
+            EncodeFixed64(buf + buf_offset, iter->second.valid_key_density_);
             val.append(buf, size);
         }
         return true;
@@ -341,6 +359,9 @@ void VlogManager::DumpDropCount()
                 buf_offset += valid_largest_key_size;
             }
 
+            uint64_t valid_key_density = DecodeFixed64(input.data() + buf_offset); // Decode valid_key_density
+            buf_offset += 8;
+
             if(manager_.count(vlog_numb) > 0)//检查manager_现在是否还有该vlog，因为有可能已经删除了
             {
                 manager_[vlog_numb].invalid_size_ = invalid_size;
@@ -349,6 +370,7 @@ void VlogManager::DumpDropCount()
                 manager_[vlog_numb].valid_smallest_key_ = valid_smallest_key;
                 manager_[vlog_numb].valid_largest_key_size_ = valid_largest_key_size;
                 manager_[vlog_numb].valid_largest_key_ = valid_largest_key;
+                manager_[vlog_numb].valid_key_density_ = valid_key_density;
                 if(invalid_size >= clean_threshold_ && vlog_numb != now_vlog_)
                 {
                     // cleaning_vlog_set_.insert(vlog_numb);

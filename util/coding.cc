@@ -231,4 +231,20 @@ bool GetLengthPrefixedSlice(Slice* input, Slice* result) {
   }
 }
 
+// Function to convert a string to a numerical value treating it as a base-128 number.
+uint64_t stringToBase128(const std::string& s) {
+    uint64_t value = 0;
+    for (char c : s) {
+        value = value * 128 + (unsigned char)c;
+    }
+    return value;
+}
+
+// Function to calculate the number of strings between start and end, inclusive.
+uint64_t countStringsInclusive(const std::string& start, const std::string& end) {
+    uint64_t startValue = stringToBase128(start);
+    uint64_t endValue = stringToBase128(end);
+    return endValue - startValue + 1;
+}
+
 }  // namespace leveldb

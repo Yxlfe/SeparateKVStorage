@@ -22,11 +22,13 @@ class VlogManager
             // uint64_t invalid_count_;//代表该vlog文件垃圾kv的数量
             // uint64_t valid_size_;//代表该vlog文件垃圾kv的大小
             uint64_t invalid_size_;//代表该vlog文件垃圾kv的数量
+            //有效kv由rewrite产生
             uint64_t valid_count_;//代表该vlog文件有效kv的数量
             uint64_t valid_smallest_key_size_;
             std::string valid_smallest_key_;//代表该vlog文件有效kv的最小值
             uint64_t valid_largest_key_size_;
             std::string valid_largest_key_;//代表该vlog文件有效kv的最大值
+            uint64_t valid_key_density_;//代表该vlog文件有效kv的范围密度
         };
 
         //zc 自定义比较器，按值降序排序,如果值相同按照键升序排序，因此无法保证键的唯一性
@@ -53,6 +55,7 @@ class VlogManager
         // void AddDropCount(uint64_t vlog_numb);
         void AddDropInfo(uint64_t vlog_numb, uint64_t invalid_size_ = 0);
         void AddValidInfo(uint64_t vlog_numb, std::string current_user_key);
+        void AddValidDensity(uint64_t vlog_numb);
         void DumpDropCount();
         //del
         bool HasVlogToClean();

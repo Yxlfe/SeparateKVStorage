@@ -2175,6 +2175,11 @@ class ModelDB: public DB {
     return batch->Iterate(&handler);
   }
 
+  virtual Status ReWrite(const WriteOptions& options, WriteBatch* updates)
+  {
+    return Status::OK();
+  }
+
   virtual bool GetProperty(const Slice& property, std::string* value) {
     return false;
   }

@@ -30,6 +30,7 @@ class VersionSet;
 class GarbageCollector;
 
 class DBImpl : public DB {
+  friend class GarbageCollector; 
  public:
   DBImpl(const Options& options, const std::string& dbname);
   virtual ~DBImpl();
@@ -38,6 +39,7 @@ class DBImpl : public DB {
   virtual Status Put(const WriteOptions&, const Slice& key, const Slice& value);
   virtual Status Delete(const WriteOptions&, const Slice& key);
   virtual Status Write(const WriteOptions& options, WriteBatch* updates);
+  virtual Status ReWrite(const WriteOptions& options, WriteBatch* updates);
   virtual Status Get(const ReadOptions& options,
                      const Slice& key,
                      std::string* value);
@@ -177,6 +179,8 @@ class DBImpl : public DB {
 
   // State below is protected by mutex_
   port::Mutex mutex_;
+  //zc 同步GC线程和主线程（为了解决rewrite 信息统计不全）
+  // port::Mutex gc_mutex_;
   port::AtomicPointer shutting_down_;
   port::CondVar bg_cv_;          // Signalled when background work finishes
   MemTable* mem_;

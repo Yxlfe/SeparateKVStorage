@@ -53,6 +53,9 @@ extern void EncodeFixed64(char* dst, uint64_t value);
 extern char* EncodeVarint32(char* dst, uint32_t value);
 extern char* EncodeVarint64(char* dst, uint64_t value);
 
+extern uint64_t stringToBase128(const std::string& s);
+extern uint64_t countStringsInclusive(const std::string& start, const std::string& end);
+
 // Lower-level versions of Get... that read directly from a character buffer
 // without any bounds checking.
 
