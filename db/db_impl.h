@@ -38,7 +38,8 @@ class DBImpl : public DB {
   // Implementations of the DB interface
   virtual Status Put(const WriteOptions&, const Slice& key, const Slice& value);
   virtual Status Delete(const WriteOptions&, const Slice& key);
-  virtual Status Write(const WriteOptions& options, WriteBatch* updates);
+  // virtual Status Write(const WriteOptions& options, WriteBatch* updates);
+  virtual Status Write(const WriteOptions& options, WriteBatch* my_batch, bool rewrite = false); 
   virtual Status ReWrite(const WriteOptions& options, WriteBatch* updates);
   virtual Status Get(const ReadOptions& options,
                      const Slice& key,
@@ -152,7 +153,7 @@ class DBImpl : public DB {
       EXCLUSIVE_LOCKS_REQUIRED(mutex_);
 
   //zc function
-  void AddValidInfoManager(WriteBatch* batch, int head_size, uint64_t vlog_offset);
+  void AddValidInfoManager(WriteBatch* batch);
 
   Status DoCompactionWork(CompactionState* compact)
       EXCLUSIVE_LOCKS_REQUIRED(mutex_);
@@ -193,7 +194,7 @@ class DBImpl : public DB {
   uint64_t check_point_;//vlog文件的重启点
   uint64_t check_log_;//从那个vlog文件开始回放
   // uint64_t drop_count_;//合并产生了多少条垃圾记录，这些新产生的信息还没有持久化到sst文件
-  uint64_t drop_size_;//系统在开启状态下compaction合并产生的垃圾记录的总大小，这些新产生的信息还没有持久化到sst文件
+  // uint64_t drop_size_;//系统在开启状态下compaction合并产生的垃圾记录的总大小，这些新产生的信息还没有持久化到sst文件
   uint64_t recover_clean_vlog_number_;
   uint64_t recover_clean_pos_;
   VlogManager vlog_manager_;

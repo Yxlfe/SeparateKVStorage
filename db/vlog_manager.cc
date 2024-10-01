@@ -146,12 +146,12 @@ void VlogManager::DumpDropCount()
     {
         auto iter = manager_.find(vlog_numb);
         if (iter != manager_.end()) {
-            iter->second.valid_key_density_ =  countStringsInclusive(iter->second.valid_smallest_key_, iter->second.valid_largest_key_) / iter->second.valid_count_;
-            std::cout << "VlogManager::AddValidInfo add vlog number = " 
-                      << iter->first 
-                      << " ,valid_key_density_ = "
-                      << iter->second.valid_key_density_
-                      << std::endl;        
+            iter->second.valid_key_density_ = iter->second.valid_count_ / countStringsInclusive(iter->second.valid_smallest_key_, iter->second.valid_largest_key_);
+            // std::cout << "VlogManager::AddValidInfo add vlog number = " 
+            //           << iter->first 
+            //           << " ,valid_key_density_ = "
+            //           << iter->second.valid_key_density_
+            //           << std::endl;        
         }
     }
 
@@ -259,7 +259,7 @@ void VlogManager::DumpDropCount()
             sum += element.second;
             // std::cout << "Vlog Number, invalid size: (" << element.first << ", " << element.second << "), Current sum: " << sum << std::endl;
             if (sum > clean_threshold_) {
-                DumpCurrentSortedCleaningVlogsBySize();
+                // DumpCurrentSortedCleaningVlogsBySize();
                 found = true; 
                 break;
             }

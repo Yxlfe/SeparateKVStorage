@@ -138,7 +138,7 @@ DBImpl::DBImpl(const Options& raw_options, const std::string& dbname)
       check_log_(0),
       check_point_(0),
       // drop_count_(0),
-      drop_size_(0),
+      // drop_size_(0),
       recover_clean_vlog_number_(0),
       recover_clean_pos_(0),
       vlog_manager_(options_.clean_threshold, options_.min_clean_threshold),
@@ -988,15 +988,15 @@ Status DBImpl::InstallCompactionResults(CompactionState* compact) {
         out.number, out.file_size, out.smallest, out.largest);
   }
   //  if(drop_count_ >= options_.log_dropCount_threshold)
-  if(drop_size_ >= options_.log_dropSize_threshold)
-  {
-      std::string vloginfo;
-      // vlog_manager_.Serialize(vloginfo);
-      vlog_manager_.SerializeVlogMetaData(vloginfo);
-      // drop_count_ = 0;
-      drop_size_ = 0;
-      compact->compaction->edit()->SetVlogInfo(vloginfo);
-  }
+  // if(drop_size_ >= options_.log_dropSize_threshold)
+  // {
+  //     std::string vloginfo;
+  //     // vlog_manager_.Serialize(vloginfo);
+  //     vlog_manager_.SerializeVlogMetaData(vloginfo);
+  //     // drop_count_ = 0;
+  //     drop_size_ = 0;
+  //     compact->compaction->edit()->SetVlogInfo(vloginfo);
+  // }
   return versions_->LogAndApply(compact->compaction->edit(), &mutex_);
 }
 
@@ -1181,7 +1181,7 @@ Status DBImpl::DoCompactionWork(CompactionState* compact) {
 
   if (status.ok()) {
     // drop_count_ += drop_count;
-    drop_size_ += drop_size;
+    // drop_size_ += drop_size;
     status = InstallCompactionResults(compact);
     // 检查是否达到垃圾回收的临界点
 
@@ -1404,7 +1404,7 @@ Status DBImpl::Delete(const WriteOptions& options, const Slice& key) {
   return DB::Delete(options, key);
 }
 
-Status DBImpl::Write(const WriteOptions& options, WriteBatch* my_batch) {
+Status DBImpl::Write(const WriteOptions& options, WriteBatch* my_batch, bool rewrite) {
   Writer w(&mutex_);
   w.batch = my_batch;
   w.sync = options.sync;
@@ -1452,6 +1452,12 @@ Status DBImpl::Write(const WriteOptions& options, WriteBatch* my_batch) {
       // std::cout << "zc after WriteBatchInternal::ByteSize(batch) = " << WriteBatchInternal::ByteSize(updates) << std::endl << std::endl;
 
       mutex_.Lock();
+
+      if (rewrite)
+      {
+        AddValidInfoManager(updates);
+      }
+
       if (sync_error) {
         // The state of the log file is indeterminate: the log record we
         // just added may or may not show up when the DB is re-opened.
@@ -1534,7 +1540,7 @@ Status DBImpl::ReWrite(const WriteOptions& options, WriteBatch* my_batch) {
 
       //增加每个vlog文件的key范围统计信息
 
-      AddValidInfoManager(updates, head_size, vlog_head_);
+      // AddValidInfoManager(updates, head_size, vlog_head_);
 
 
       mutex_.Lock();
@@ -1570,7 +1576,7 @@ Status DBImpl::ReWrite(const WriteOptions& options, WriteBatch* my_batch) {
   return status;
 }
 
-void DBImpl::AddValidInfoManager(WriteBatch* batch, int head_size, uint64_t vlog_offset)
+void DBImpl::AddValidInfoManager(WriteBatch* batch)
 {
   // static int counts = 0;
   // static uint64_t countSize = 0;
@@ -1617,11 +1623,11 @@ void DBImpl::AddValidInfoManager(WriteBatch* batch, int head_size, uint64_t vlog
       recordCounts++;
   }
   vlog_manager_.AddValidDensity(logfile_number_);
-  std::cout << "zc DBImpl::AddValidInfoManager logfile_number_ = " 
-            << logfile_number_ 
-            << " ,rewrite counts = "
-            << recordCounts
-            << std::endl;
+  // std::cout << "zc DBImpl::AddValidInfoManager logfile_number_ = " 
+  //           << logfile_number_ 
+  //           << " ,rewrite counts = "
+  //           << recordCounts
+  //           << std::endl;
 }
 
 // REQUIRES: Writer list must be non-empty
@@ -1976,7 +1982,7 @@ void DBImpl::BackgroundClean()
             // versions_->LogAndApply(&edit, &mutex_);
             // mutex_.Unlock();
         }
-        else
+        else if(gc_stats.bytes_rewrite != 0)
         {
             gc_status_[clean_vlog_number].Add(gc_stats);
             // vlog_manager_.RemoveCleaningVlog(clean_vlog_number);
@@ -2070,19 +2076,43 @@ bool DBImpl::GetProperty(const Slice& property, std::string* value) {
     }
     snprintf(buf, sizeof(buf),
              "                               Gc\n"
-             "FileNumber   GcTime(mis) Read(MB) reWrite(B)\n"
+             "FileNumber   GcTime(sec) Read(MB) reWrite(MB)\n"
              "--------------------------------------------------\n"
              );
     value->append(buf);
+    uint64_t total_read_MB = 0;
+    uint64_t total_gc_sec = 0;
+    uint64_t total_rewrite_MB = 0;
+    double total_rewrite_ratio = 0;
+    bool hasGcFlag = false;
     for (const auto& [fileNO, GcStats] : gc_status_) {
+      if (fileNO > 0)
+      {
         snprintf(
             buf, sizeof(buf),
-            "%3ld     %9.0lf   %8.0f   %9.0ld\n",
+            "%3ld     %9.0lf   %10.0f    %9.0lf\n",
             fileNO,
             GcStats.micros / 1e6,
             GcStats.bytes_read / 1048576.0,
-            GcStats.bytes_rewrite);
+            GcStats.bytes_rewrite / 1048576.0);
+        total_read_MB += GcStats.bytes_read / 1048576.0;
+        total_gc_sec += GcStats.micros / 1e3;
+        total_rewrite_MB += GcStats.bytes_rewrite / 1048576.0;
         value->append(buf);
+        hasGcFlag = true;
+      }
+    }
+    if(hasGcFlag == true)
+    {
+      total_rewrite_ratio = static_cast<double>(total_rewrite_MB) / static_cast<double>(total_read_MB);
+      snprintf(
+            buf, sizeof(buf),
+            "total_read_MB = %lu MB, total_gc_sec = %lu ms, total_rewrite_MB = %lu MB, total_rewrite_ratio = %f\n",
+            total_read_MB,
+            total_gc_sec,
+            total_rewrite_MB,
+            total_rewrite_ratio);
+      value->append(buf);
     }
     return true;
   } else if (in == "sstables") {
@@ -2105,6 +2135,7 @@ bool DBImpl::GetProperty(const Slice& property, std::string* value) {
 
   return false;
 }
+
 //ApproximateSizes是不包含v大小的
 void DBImpl::GetApproximateSizes(
     const Range* range, int n,
@@ -2189,10 +2220,10 @@ Status DB::Open(const Options& options, const std::string& dbname,
     s = impl->versions_->LogAndApply(&edit, &impl->mutex_);
   }
   
-  if(impl->recover_clean_vlog_number_ == 0)
-  {
-      std::cout << "last open has no unfinished clean_vlog_number" << std::endl;
-  }
+  // if(impl->recover_clean_vlog_number_ == 0)
+  // {
+  //     std::cout << "last open has no unfinished clean_vlog_number" << std::endl;
+  // }
 
   if (s.ok() && impl->recover_clean_vlog_number_ > 0 &&
           impl->vlog_manager_.NeedRecover(impl->recover_clean_vlog_number_)) {

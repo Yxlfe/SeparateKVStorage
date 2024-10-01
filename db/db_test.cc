@@ -2159,7 +2159,7 @@ class ModelDB: public DB {
   virtual void ReleaseSnapshot(const Snapshot* snapshot) {
     delete reinterpret_cast<const ModelSnapshot*>(snapshot);
   }*/
-  virtual Status Write(const WriteOptions& options, WriteBatch* batch) {
+  virtual Status Write(const WriteOptions& options, WriteBatch* batch, bool rewrite = false) {
     class Handler : public WriteBatch::Handler {
      public:
       KVMap* map_;
