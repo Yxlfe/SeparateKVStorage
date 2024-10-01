@@ -231,25 +231,9 @@ void GarbageCollector::BGCleanBeginGarbageCollect(bool* shutdown, uint64_t& read
         }
         assert(pos == size);
 
-        // if(WriteBatchInternal::ByteSize(&clean_valid_batch) > db_->options_.clean_write_buffer_size)
-        // {//clean_write_buffer_size必须要大于12才行，12是batch的头部长，创建batch或者clear batch后的初始大小就是12
-        //     // std::cout << "zc GarbageCollector::BeginGarbageCollect clean_valid_batch.size = "
-        //     // << rewrite_size
-        //     // << " ,vlog_number = "
-        //     // << vlog_number_
-        //     // << std::endl;
-        //     Status s = db_->Write(write_options, &clean_valid_batch);
-        //     assert(s.ok());
-        //     rewrite_size += WriteBatchInternal::ByteSize(&clean_valid_batch);
-        //     clean_valid_batch.Clear();
-        // }
-    }
-
-    if(isEndOfFile)
-    {
         if(WriteBatchInternal::ByteSize(&clean_valid_batch) > db_->options_.clean_write_buffer_size)
         {
-            Status s = db_->ReWrite(write_options, &clean_valid_batch);
+            Status s = db_->Write(write_options, &clean_valid_batch, true);
             assert(s.ok());
             if(s.ok())
             {
@@ -262,8 +246,28 @@ void GarbageCollector::BGCleanBeginGarbageCollect(bool* shutdown, uint64_t& read
         //         << vlog_number_
         //         << " ,rewriteCounts = "
         //         << rewriteCounts
-        //         << std::endl;        
+        //         << std::endl;      
     }
+
+    // if(isEndOfFile)
+    // {
+    //     if(WriteBatchInternal::ByteSize(&clean_valid_batch) > db_->options_.clean_write_buffer_size)
+    //     {
+    //         Status s = db_->Write(write_options, &clean_valid_batch, true);
+    //         assert(s.ok());
+    //         if(s.ok())
+    //         {
+    //             rewrite_size += WriteBatchInternal::ByteSize(&clean_valid_batch);
+    //         }
+    //         clean_valid_batch.Clear();
+    //     }
+
+    //     // std::cout << "zc GarbageCollector::BeginGarbageCollect GcvlogNumber = "
+    //     //         << vlog_number_
+    //     //         << " ,rewriteCounts = "
+    //     //         << rewriteCounts
+    //     //         << std::endl;        
+    // }
 
 
 
@@ -277,12 +281,7 @@ void GarbageCollector::BGCleanBeginGarbageCollect(bool* shutdown, uint64_t& read
     else
         Log(db_->options_.info_log," clean stop by unknown reason\n");
 #endif
-    if(WriteBatchInternal::Count(&clean_valid_batch) > 0)
-    {
-        Status s = db_->Write(write_options, &clean_valid_batch);
-        assert(s.ok());
-        clean_valid_batch.Clear();
-    }
+
     
     read_size += garbage_pos_ - garbage_pos;
 
@@ -293,6 +292,8 @@ void GarbageCollector::BGCleanBeginGarbageCollect(bool* shutdown, uint64_t& read
         {
             std::string file_name = VLogFileName(db_->dbname_, vlog_number_);
             db_->env_->DeleteFile(file_name);
+            db_->vlog_manager_.RemoveSortedCleaningVlog(vlog_number_);
+            db_->DelSpevlogMetaMap(vlog_number_);
             Log(db_->options_.info_log,"clean vlog %lu ok and delete it\n", vlog_number_);
             // if(WriteBatchInternal::ByteSize(&clean_valid_batch) > db_->options_.clean_write_buffer_size)
             // {//clean_write_buffer_size必须要大于12才行，12是batch的头部长，创建batch或者clear batch后的初始大小就是12

@@ -7,6 +7,7 @@
 #include <unordered_set>
 #include "db/vlog_reader.h"
 #include <set>
+#include <atomic>
 
 namespace leveldb {
 class VlogManager
@@ -28,7 +29,8 @@ class VlogManager
             std::string valid_smallest_key_;//代表该vlog文件有效kv的最小值
             uint64_t valid_largest_key_size_;
             std::string valid_largest_key_;//代表该vlog文件有效kv的最大值
-            uint64_t valid_key_density_;//代表该vlog文件有效kv的范围密度
+            double valid_key_density_;//代表该vlog文件有效kv的范围密度
+            // u_char oversize;
         };
 
         //zc 自定义比较器，按值降序排序,如果值相同按照键升序排序，因此无法保证键的唯一性
@@ -41,6 +43,21 @@ class VlogManager
                 return lhs.first < rhs.first;  // 如果值相等，则按键升序排序
             }
         };
+
+        //zc 自定义比较器，按值降序排序,如果值相同按照键升序排序，可以保证键的唯一性
+        // struct CompareByValueDesc {
+        //     bool operator()(const std::pair<uint64_t, uint64_t>& lhs,
+        //                 const std::pair<uint64_t, uint64_t>& rhs) const {
+        //         if (lhs.first == rhs.first) {
+        //             return false;  // vlog_numb 相同，视为相等
+        //         }
+        //         if (lhs.second != rhs.second) {
+        //             return lhs.second > rhs.second;  // 按 invalid_size_ 降序排列
+        //         }
+        //         return lhs.first < rhs.first;  // 如果 invalid_size_ 相等，则按 vlog_numb 升序排列
+        //     }
+        // };
+
 
 
         VlogManager(uint64_t clean_threshold = 0, uint64_t min_clean_threshold = 0);
@@ -56,6 +73,8 @@ class VlogManager
         void AddDropInfo(uint64_t vlog_numb, uint64_t invalid_size_ = 0);
         void AddValidInfo(uint64_t vlog_numb, std::string current_user_key);
         void AddValidDensity(uint64_t vlog_numb);
+        //return vlogNumber
+        int64_t searchTargetKeyWithDensity(std::string targetKey);
         void DumpDropCount();
         //del
         bool HasVlogToClean();
@@ -71,6 +90,8 @@ class VlogManager
         uint64_t GetVlogToClean();
         uint64_t GetSortedVlogToClean();
         void SetNowVlog(uint64_t vlog_numb);
+        // void SetVlogOverSizeFlag(uint64_t vlog_numb);
+        // u_char GetVlogOverSizeFlag(uint64_t vlog_numb);
         // bool Serialize(std::string& val);
         // bool Deserialize(std::string& val);
         bool SerializeVlogMetaData(std::string& val);
@@ -82,12 +103,14 @@ class VlogManager
         std::unordered_map<uint64_t, VlogInfo> manager_;
         std::unordered_set<uint64_t> cleaning_vlog_set_;
         //zc 添加一个新的map来按invalid_size_排序存储vlog编号
+        //优化std::set<std::pair<uint64_t, uint64_t>, CompareByValueDesc>的比较器，确保key唯一性，用find代替find_if优化查找性能
         std::set<std::pair<uint64_t, uint64_t>, CompareByValueDesc> sorted_cleaningVlogs_bySize_;
         //zc 当前GC线程回收的vlog编号集合
         std::set<std::pair<uint64_t, uint64_t>, CompareByValueDesc> current_sorted_cleaningVlogs_bySize_;
         uint64_t min_clean_threshold_;
         uint64_t clean_threshold_;
         uint64_t now_vlog_;
+        // std::atomic<uint64_t> counter; // 原子计数器
 };
 }
 

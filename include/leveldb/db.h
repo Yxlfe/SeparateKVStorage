@@ -71,7 +71,7 @@ class DB {
   // Apply the specified updates to the database.
   // Returns OK on success, non-OK on failure.
   // Note: consider setting options.sync = true.
-  virtual Status Write(const WriteOptions& options, WriteBatch* updates) = 0;
+  virtual Status Write(const WriteOptions& options, WriteBatch* updates, bool rewrite = false) = 0;
   virtual Status ReWrite(const WriteOptions& options, WriteBatch* updates) = 0;
 
   // If the database contains an entry for "key" store the

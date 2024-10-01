@@ -132,13 +132,15 @@ DBImpl::DBImpl(const Options& raw_options, const std::string& dbname)
       mem_(NULL),
       imm_(NULL),
       logfile_number_(0),
+      max_logfile_number_(0),
+      max_vlog_head_(0),
       vlog_(NULL),
       vlogfile_(NULL),
       vlog_head_(0),
       check_log_(0),
       check_point_(0),
       // drop_count_(0),
-      drop_size_(0),
+      // drop_size_(0),
       recover_clean_vlog_number_(0),
       recover_clean_pos_(0),
       vlog_manager_(options_.clean_threshold, options_.min_clean_threshold),
@@ -154,7 +156,7 @@ DBImpl::DBImpl(const Options& raw_options, const std::string& dbname)
   table_cache_ = new TableCache(dbname_, &options_, table_cache_size);
   versions_ = new VersionSet(dbname_, &options_, table_cache_,
                              &internal_comparator_);
-  std::cout << "zc options_.clean_threshold = " << options_.clean_threshold 
+  std::cout << "zc DBImpl construct options_.clean_threshold = " << options_.clean_threshold 
             << " ,options_.min_clean_threshold = " << options_.min_clean_threshold
             << std::endl;
 }
@@ -168,11 +170,13 @@ DBImpl::~DBImpl() {
     bg_cv_.Wait();
   }
   // if(drop_count_ > 0)
-  // if(drop_size_ > 0)
+  // if(drop_size_ >= 0)
   // {
       std::string vloginfo;
       // vlog_manager_.Serialize(vloginfo);
-      vlog_manager_.SerializeVlogMetaData(vloginfo);      
+      // std::cout << "DBImpl::~DBImpl 177" << std::endl;
+      vlog_manager_.SerializeVlogMetaData(vloginfo); 
+      // std::cout << "DBImpl::~DBImpl 179" << std::endl;     
       VersionEdit edit;
       edit.SetVlogInfo(vloginfo);
       versions_->LogAndApply(&edit, &mutex_);
@@ -198,8 +202,12 @@ DBImpl::~DBImpl() {
   if (mem_ != NULL) mem_->Unref();
   if (imm_ != NULL) imm_->Unref();
   delete tmp_batch_;
-  delete vlog_;
-  delete vlogfile_;
+  // delete vlog_;
+  // delete vlogfile_;
+  // std::cout << "DBImpl::~DBImpl 203" << std::endl;
+  //zc del all vlogMetaMap
+  DelAllvlogMetaMap();
+  // std::cout << "DBImpl::~DBImpl 206" << std::endl;
   delete table_cache_;
 
   if (owns_info_log_) {
@@ -378,7 +386,7 @@ Status DBImpl::Recover(VersionEdit* edit, bool *save_manifest) {
   }
   SequenceNumber max_sequence(0);
   const uint64_t min_log = versions_->LogNumber();
-  // std::cout << "zc " << "min_vlog = " << min_log << std::endl;
+  std::cout << "zc " << "min_vlog = " << min_log << std::endl;
   std::vector<std::string> filenames;
   s = env_->GetChildren(dbname_, &filenames);
   if (!s.ok()) {
@@ -401,9 +409,16 @@ Status DBImpl::Recover(VersionEdit* edit, bool *save_manifest) {
           s = options_.env->NewSequentialFile(vlog_name, &vlr_file);
           log::VReader* vlog_reader = new log::VReader(vlr_file, true,0);
           vlog_manager_.AddVlog(number, vlog_reader);
+          uint64_t vlogSize = 0;
+          s = options_.env->GetFileSize(vlog_name, &vlogSize);
+          // std::cout << "zc DBImpl::Recover vlogNum = " << number << std::endl;
+          UpdateOffsetvlogMetaMap(number, vlogSize);
+          // AddvlogOffsetMap(number, vlogSize);
       }
     }
   }
+
+
   if (!expected.empty()) {
     char buf[50];
     snprintf(buf, sizeof(buf), "%d missing files; e.g.",
@@ -413,6 +428,8 @@ Status DBImpl::Recover(VersionEdit* edit, bool *save_manifest) {
   if(!vloginfo.empty())
   {
     vlog_manager_.DeserializeVlogMetaData(vloginfo);
+    // std::cout << "DBImpl::Recover vloginfo from last version" << std::endl;
+    // vlog_manager_.DumpDropCount();
   }
 
   std::sort(logs.begin(), logs.end());
@@ -441,10 +458,234 @@ Status DBImpl::Recover(VersionEdit* edit, bool *save_manifest) {
         versions_->MarkVlogNumberUsed(logs[i]);
     }
 
+
     if(versions_->LastSequence() < max_sequence) {
         versions_->SetLastSequence(max_sequence);
     }
     return Status::OK();
+}
+
+int64_t DBImpl::searchMaxvlogExistKeyCount()
+{
+    int64_t maxvlogNum = -1;
+    uint64_t maxCount = 0;
+
+    for (const auto& pair : vlogExistKeyCountsMap) {
+        if (pair.second > maxCount) {
+            maxCount = pair.second;
+            maxvlogNum = pair.first;
+        }
+    }
+    vlogExistKeyCountsMap.clear();
+    return maxvlogNum;
+}
+
+int64_t DBImpl::GetMostInvalidKeyVlogNum(WriteBatch* batch)
+{
+    uint64_t size = WriteBatchInternal::ByteSize(batch);//size是整个batch的长度，包括batch头
+    uint64_t pos = 0;//是相对batch起始位置的偏移
+    Slice key,value;
+    uint64_t recordCounts = 0;
+    Status s;
+    while(pos < size)//遍历batch看哪些kv有效
+    {
+        bool isDel = false;
+        s =WriteBatchInternal::ParseRecord(batch, pos, key, value, isDel);//解析完一条kv后pos是下一条kv的pos
+        assert(s.ok());
+        if(!isDel)
+        {
+          int64_t maxDensityVlog =  vlog_manager_.searchTargetKeyWithDensity(key.ToString());
+          if(maxDensityVlog != -1)
+          {
+            vlogExistKeyCountsMap[maxDensityVlog]++;
+          }
+        }
+        assert(pos == size);
+    }
+
+
+    int64_t new_log_number = searchMaxvlogExistKeyCount();
+    if(new_log_number == -1)
+    {
+        // std::cout<< "zc WriteBatch did not recognize the existing key in the vlog" << std::endl;
+        return new_log_number;
+    }
+    else
+    {
+        // std::cout<< "zc searchMaxvlogExistKeyCount recognize the existing key in the vlog = "
+        //          << new_log_number
+        //          << std::endl;
+    }
+
+    logfile_number_ = new_log_number;
+    bool ret = GetOffsetvlogMetaMap(new_log_number, vlog_head_);
+    if(ret)
+    {
+      // std::cout<< "zc WriteBatch recognize the existing key in the vlog = " 
+      //        << new_log_number
+      //        << " ,offset = "
+      //        << vlog_head_
+      //        << std::endl;
+    }
+    else
+    {
+      std::cout<< "zc WriteBatch GetOffsetvlogMetaMap vlog = " 
+            << new_log_number
+            << " fail"
+            << std::endl;
+      exit(1);     
+    }
+
+    ret = GetHandlevlogMetaMap(new_log_number, vlogfile_, vlog_);
+    if(ret)
+    {
+
+    }
+    else
+    {
+      std::cout<< "zc WriteBatch GetHandlevlogMetaMap vlog = " 
+            << new_log_number
+            << " fail"
+            << std::endl;
+      exit(1);     
+    }
+
+    // WritableFile* vlfile;
+    // s = env_->NewAppendableFile(VLogFileName(dbname_, new_log_number), &vlfile);
+    // if (!s.ok()) {
+    //   std::cout << "DBImpl::GetMostInvalidKeyVlogNum Get Fail" << std::endl;
+    //   return -1;
+    // }
+    // delete vlog_;
+    // delete vlogfile_;
+    // vlogfile_ = vlfile;
+    // logfile_number_ = new_log_number;
+    // vlog_ = new log::VWriter(vlfile);
+
+    vlog_manager_.SetNowVlog(new_log_number);
+    //zc update vlogMetaMap
+    UpdateOffsetvlogMetaMap(logfile_number_, vlog_head_);
+    UpdateHandlevlogMetaMap(logfile_number_, vlogfile_, vlog_);
+    // SequentialFile* vlr_file;
+    // s = options_.env->NewSequentialFile(VLogFileName(dbname_, new_log_number), &vlr_file);
+    // log::VReader* vlog_reader = new log::VReader(vlr_file, true,0);
+    // vlog_manager_.AddVlog(new_log_number, vlog_reader);
+    Log(options_.info_log, "new vlog %ld...\n", new_log_number);
+    return new_log_number;
+}
+
+bool DBImpl::DelSpevlogMetaMap(uint64_t vlogNumber)
+{
+    auto iter = vlogMeta.find(vlogNumber);
+    if (iter != vlogMeta.end()) {
+        // std::cout << "zc DBImpl del log = " << iter->first << std::endl;
+        if(iter->second.vlog != nullptr)
+        {
+          delete(iter->second.vlog);
+        }
+        if(iter->second.vlogfile != nullptr)
+        {
+          delete(iter->second.vlogfile);
+        }
+        vlogMeta.erase(iter);
+        return true;
+    }
+    return false;
+}
+
+void DBImpl::DelAllvlogMetaMap()
+{
+    for (auto& iter : vlogMeta) {
+        // std::cout << "zc DBImpl del all log = " << iter.first << std::endl;
+        if(iter.second.vlog != nullptr && iter.first != 0)
+        {
+          // std::cout << "zc DelAllvlogMetaMap vlog = " << iter.second.vlog << std::endl;
+          delete(iter.second.vlog);
+        }
+        if(iter.second.vlogfile != nullptr && iter.first != 0)
+        {
+          // std::cout << "zc DelAllvlogMetaMap vlogfile = " << iter.second.vlogfile << std::endl;
+          delete(iter.second.vlogfile);
+        }
+        // std::cout << "zc DBImpl::DelAllvlogMetaMap 607"<< std::endl;
+    }
+    // std::cout << "zc DBImpl::DelAllvlogMetaMap 609"<< std::endl;
+    vlogMeta.clear();
+    // std::cout << "zc DBImpl::DelAllvlogMetaMap 611"<< std::endl;
+}
+
+bool DBImpl::GetHandlevlogMetaMap(uint64_t vlogNumber, WritableFile*& vlogfile, log::VWriter*& vlog) {
+    auto iter = vlogMeta.find(vlogNumber);
+    if (iter != vlogMeta.end()) {
+        vlogfile = iter->second.vlogfile; 
+        vlog = iter->second.vlog;       
+        return true;
+    }
+    return false;
+}
+
+
+
+bool DBImpl::GetOffsetvlogMetaMap(uint64_t vlogNumber, uint64_t& tailoffset)
+{
+  auto iter = vlogMeta.find(vlogNumber);
+  if (iter != vlogMeta.end())
+  {
+    tailoffset = iter->second.offset;
+    return true;
+  }
+  else
+  {
+    return false;
+  }
+}
+
+void DBImpl::UpdateOffsetvlogMetaMap(uint64_t vlogNumber, uint64_t tailoffset)
+{
+  vlogMeta[vlogNumber].offset = tailoffset;
+}
+
+void DBImpl::UpdateHandlevlogMetaMap(uint64_t vlogNumber, WritableFile* vlogfile, log::VWriter* vlog)
+{
+  vlogMeta[vlogNumber].vlogfile = vlogfile;
+  vlogMeta[vlogNumber].vlog = vlog;
+}
+
+void DBImpl::AddvlogOffsetMap(uint64_t vlogNumber, uint64_t tailoffset)
+{
+  vlogOffset[vlogNumber] = tailoffset;
+}
+
+bool DBImpl::GetvlogOffsetMap(uint64_t vlogNumber, uint64_t& tailoffset)
+{
+  auto iter = vlogOffset.find(vlogNumber);
+  if(iter != vlogOffset.end())
+  {
+    tailoffset = iter->second;
+  }
+  else
+  {
+    // std::cout << "DBImpl::GetvlogOffsetMap failed" << std::endl;
+    return false;
+  }
+
+  return true;
+
+}
+
+void DBImpl::DumpvlogOffsetMap()
+{
+    std::cout << "DumpvlogOffsetMap size = " << vlogOffset.size() << std::endl;
+    // Iterate through the vlogOffset map
+    for (auto iter = vlogOffset.begin(); iter != vlogOffset.end(); ++iter)
+    {
+        uint64_t vlogNum = iter->first; // The vlog number (key)
+        uint64_t tailoffset = iter->second;  // The tailoffset struct (value)
+
+        std::cout << "Vlog Number: " << vlogNum << std::endl;
+        std::cout << "tailoffset: " << tailoffset << std::endl;
+        std::cout << "----------------------------------------" << std::endl;
+    }
 }
 
 Status DBImpl::RecoverLogFile(uint64_t log_number, bool last_log,
@@ -541,6 +782,9 @@ Status DBImpl::RecoverLogFile(uint64_t log_number, bool last_log,
     }
   }
 
+
+
+
   if(!last_log)//vlog文件很大，一般恢复时最多同时跨两个vlog文件，第一个恢复完后，
   {//第二个vlog需要从文件头开始恢复
       vlog_head_ = 0;
@@ -581,11 +825,17 @@ Status DBImpl::RecoverLogFile(uint64_t log_number, bool last_log,
 
       WritableFile* vlfile;
       logfile_number_ = log_number;
+      max_logfile_number_ = log_number;
       std::string vlog_name = VLogFileName(dbname_, log_number);
       status = options_.env->NewAppendableFile(vlog_name, &vlfile);//没问题，因为我们是appendablefile
       vlogfile_ = vlfile;
       vlog_ = new log::VWriter(vlfile);
       vlog_manager_.SetNowVlog(log_number);
+      //zc update vlogMetaMap
+      // std::cout << "zc DBImpl::RecoverLogFile vlogNum = " << logfile_number_ << std::endl;
+      UpdateOffsetvlogMetaMap(logfile_number_, vlog_head_);
+      UpdateHandlevlogMetaMap(logfile_number_, vlogfile_, vlog_);
+      max_vlog_head_ = vlog_head_;
   }
 
   return status;
@@ -988,15 +1238,15 @@ Status DBImpl::InstallCompactionResults(CompactionState* compact) {
         out.number, out.file_size, out.smallest, out.largest);
   }
   //  if(drop_count_ >= options_.log_dropCount_threshold)
-  if(drop_size_ >= options_.log_dropSize_threshold)
-  {
-      std::string vloginfo;
-      // vlog_manager_.Serialize(vloginfo);
-      vlog_manager_.SerializeVlogMetaData(vloginfo);
-      // drop_count_ = 0;
-      drop_size_ = 0;
-      compact->compaction->edit()->SetVlogInfo(vloginfo);
-  }
+  // if(drop_size_ >= options_.log_dropSize_threshold)
+  // {
+  //     std::string vloginfo;
+  //     // vlog_manager_.Serialize(vloginfo);
+  //     vlog_manager_.SerializeVlogMetaData(vloginfo);
+  //     // drop_count_ = 0;
+  //     drop_size_ = 0;
+  //     compact->compaction->edit()->SetVlogInfo(vloginfo);
+  // }
   return versions_->LogAndApply(compact->compaction->edit(), &mutex_);
 }
 
@@ -1181,7 +1431,7 @@ Status DBImpl::DoCompactionWork(CompactionState* compact) {
 
   if (status.ok()) {
     // drop_count_ += drop_count;
-    drop_size_ += drop_size;
+    // drop_size_ += drop_size;
     status = InstallCompactionResults(compact);
     // 检查是否达到垃圾回收的临界点
 
@@ -1404,7 +1654,7 @@ Status DBImpl::Delete(const WriteOptions& options, const Slice& key) {
   return DB::Delete(options, key);
 }
 
-Status DBImpl::Write(const WriteOptions& options, WriteBatch* my_batch) {
+Status DBImpl::Write(const WriteOptions& options, WriteBatch* my_batch, bool rewrite) {
   Writer w(&mutex_);
   w.batch = my_batch;
   w.sync = options.sync;
@@ -1420,7 +1670,11 @@ Status DBImpl::Write(const WriteOptions& options, WriteBatch* my_batch) {
   }
 
   // May temporarily unlock and wait.
-  Status status = MakeRoomForWrite(my_batch == NULL);
+  //zc 重要修改
+  Writer* temp_writer = &w;
+  WriteBatch* temp_batch = BuildBatchGroup(&temp_writer);
+
+  Status status = MakeRoomForWrite(my_batch == NULL, temp_batch, rewrite);
   uint64_t last_sequence = versions_->LastSequence();
   Writer* last_writer = &w;
   if (status.ok() && my_batch != NULL) {  // NULL batch is for compactions
@@ -1428,12 +1682,15 @@ Status DBImpl::Write(const WriteOptions& options, WriteBatch* my_batch) {
     WriteBatchInternal::SetSequence(updates, last_sequence + 1);
     last_sequence += WriteBatchInternal::Count(updates);
 
+    // GetMostInvalidKeyVlogNum(updates);
+
     // Add to log and apply to memtable.  We can release the lock
     // during this phase since &w is currently responsible for logging
     // and protects against concurrent loggers and concurrent writes
     // into mem_.
     {
       mutex_.Unlock();
+      
     int head_size = 0;
       status = vlog_->AddRecord(WriteBatchInternal::Contents(updates), head_size);
       bool sync_error = false;
@@ -1451,7 +1708,17 @@ Status DBImpl::Write(const WriteOptions& options, WriteBatch* my_batch) {
       }
       // std::cout << "zc after WriteBatchInternal::ByteSize(batch) = " << WriteBatchInternal::ByteSize(updates) << std::endl << std::endl;
 
+      // AddvlogOffsetMap(logfile_number_, vlog_head_);
+      UpdateOffsetvlogMetaMap(logfile_number_, vlog_head_);
+      // UpdateHandlevlogMetaMap(logfile_number_, vlogfile_, vlog_);
+
       mutex_.Lock();
+      
+      if (rewrite)
+      {
+        AddValidInfoManager(updates);
+      }
+
       if (sync_error) {
         // The state of the log file is indeterminate: the log record we
         // just added may or may not show up when the DB is re-opened.
@@ -1534,7 +1801,7 @@ Status DBImpl::ReWrite(const WriteOptions& options, WriteBatch* my_batch) {
 
       //增加每个vlog文件的key范围统计信息
 
-      AddValidInfoManager(updates, head_size, vlog_head_);
+      AddValidInfoManager(updates);
 
 
       mutex_.Lock();
@@ -1570,7 +1837,7 @@ Status DBImpl::ReWrite(const WriteOptions& options, WriteBatch* my_batch) {
   return status;
 }
 
-void DBImpl::AddValidInfoManager(WriteBatch* batch, int head_size, uint64_t vlog_offset)
+void DBImpl::AddValidInfoManager(WriteBatch* batch)
 {
   // static int counts = 0;
   // static uint64_t countSize = 0;
@@ -1617,11 +1884,11 @@ void DBImpl::AddValidInfoManager(WriteBatch* batch, int head_size, uint64_t vlog
       recordCounts++;
   }
   vlog_manager_.AddValidDensity(logfile_number_);
-  std::cout << "zc DBImpl::AddValidInfoManager logfile_number_ = " 
-            << logfile_number_ 
-            << " ,rewrite counts = "
-            << recordCounts
-            << std::endl;
+  // std::cout << "zc DBImpl::AddValidInfoManager logfile_number_ = " 
+  //           << logfile_number_ 
+  //           << " ,rewrite counts = "
+  //           << recordCounts
+  //           << std::endl;
 }
 
 // REQUIRES: Writer list must be non-empty
@@ -1673,37 +1940,105 @@ WriteBatch* DBImpl::BuildBatchGroup(Writer** last_writer) {
   return result;
 }
 
+
 // REQUIRES: mutex_ is held
 // REQUIRES: this thread is currently at the front of the writer queue
-Status DBImpl::MakeRoomForWrite(bool force) {
+Status DBImpl::MakeRoomForWrite(bool force, WriteBatch* batch, bool rewrite) {
   mutex_.AssertHeld();
   assert(!writers_.empty());
 
   bool allow_delay = !force;
   Status s;
-      if(vlog_head_ >= options_.max_vlog_size)
+
+      //zc
+      uint64_t writeBatchSize = WriteBatchInternal::ByteSize(batch);
+
+      // uint64_t rewriteFlag = -1;
+      // if (rewrite != true)
+      // {
+      //   rewriteFlag = GetMostInvalidKeyVlogNum(batch);
+      // }
+      int64_t rewriteFlag = 0;
+      rewriteFlag = GetMostInvalidKeyVlogNum(batch);
+
+
+      // u_char overSizeFlag = vlog_manager_.GetVlogOverSizeFlag(logfile_number_);
+      // if((rewriteFlag == -1 && vlog_head_ + writeBatchSize >= options_.preload_vlog_size) 
+      //     || (vlog_head_ + writeBatchSize >= options_.max_vlog_size))
+      // if(vlog_head_ + writeBatchSize > options_.max_vlog_size && overSizeFlag == 0)
+      GetOffsetvlogMetaMap(max_logfile_number_, max_vlog_head_);
+      // if(vlog_head_ >= options_.max_vlog_size && max_vlog_head_  >= options_.max_vlog_size)
+      if(vlog_head_ + writeBatchSize >= options_.max_vlog_size && max_vlog_head_ + writeBatchSize >= options_.max_vlog_size)
       {
+        //  std::cout << "create new vlog"
+        //            << " max_logfile_number_ = "
+        //            <<  max_logfile_number_
+        //            << " max_vlog_head = "
+        //            << max_vlog_head_
+        //           //  << " max_vlog_head_ + writeBatchSize = "
+        //           //  << max_vlog_head_ + writeBatchSize
+        //            << " ,logfile_number_ = " 
+        //            << logfile_number_
+        //            << " ,offset = " 
+        //            << vlog_head_
+        //            << std::endl;
+        //  vlog_manager_.SetVlogOverSizeFlag(logfile_number_);
     //新生成的vlog文件的编号会和imm生成的sst文件一起应用到version中，见CompactMemTable
+        //  AddvlogOffsetMap(logfile_number_, vlog_head_);
+        
          uint32_t new_log_number = versions_->NewVlogNumber();
+
          vlog_head_ = 0;
          WritableFile* vlfile;
-         s = env_->NewWritableFile(VLogFileName(dbname_, new_log_number), &vlfile);
+        //  s = env_->NewWritableFile(VLogFileName(dbname_, new_log_number), &vlfile);
+         s = options_.env->NewAppendableFile(VLogFileName(dbname_, new_log_number), &vlfile);//appendablefile
          if (!s.ok()) {
             versions_->ReuseVlogNumber(new_log_number);
  //           break;
             return s;
          }
-         delete vlog_;
-         delete vlogfile_;
+        //  delete vlog_;
+        //  delete vlogfile_;
          vlogfile_ = vlfile;
          logfile_number_ = new_log_number;
+         max_logfile_number_ = new_log_number;
          vlog_ = new log::VWriter(vlfile);
+         //zc update vlogMetaMap
+        //  std::cout << "zc DBImpl::MakeRoomForWrite vlogNum = " << logfile_number_ << std::endl;
+         UpdateOffsetvlogMetaMap(logfile_number_, vlog_head_);
+         UpdateHandlevlogMetaMap(logfile_number_, vlogfile_, vlog_);
+
           SequentialFile* vlr_file;
           s = options_.env->NewSequentialFile(VLogFileName(dbname_, new_log_number), &vlr_file);
           log::VReader* vlog_reader = new log::VReader(vlr_file, true,0);
           vlog_manager_.AddVlog(new_log_number, vlog_reader);
           Log(options_.info_log, "new vlog %d...\n", new_log_number);
       }
+      // else if(vlog_head_ >= options_.max_vlog_size && max_vlog_head_ < options_.max_vlog_size)      
+      else if(vlog_head_ + writeBatchSize >= options_.max_vlog_size && max_vlog_head_ + writeBatchSize < options_.max_vlog_size)
+      {
+          logfile_number_ = max_logfile_number_;
+          GetOffsetvlogMetaMap(logfile_number_, vlog_head_);
+          GetHandlevlogMetaMap(logfile_number_, vlogfile_, vlog_);
+          // std::cout << "use existed vlog"
+          // << "max_vlog_head = "
+          // << max_vlog_head_
+          // << " ,max_logfile_number_ = " 
+          // << logfile_number_
+          // << " ,offset = " 
+          // << vlog_head_
+          // << std::endl;
+      } 
+      // else if(rewriteFlag != -1 && vlog_head_ + writeBatchSize < options_.max_vlog_size)
+      // {
+      //     std::cout << "rewriteFlag = "
+      //               << rewriteFlag
+      //               << " , rewrite vlog number = " 
+      //               << logfile_number_
+      //               << " ,offset = " 
+      //               << vlog_head_
+      //               << std::endl;
+      // }
       
       
   while (true) {
@@ -1976,11 +2311,11 @@ void DBImpl::BackgroundClean()
             // versions_->LogAndApply(&edit, &mutex_);
             // mutex_.Unlock();
         }
-        else
+        else if(gc_stats.bytes_rewrite != 0)
         {
             gc_status_[clean_vlog_number].Add(gc_stats);
             // vlog_manager_.RemoveCleaningVlog(clean_vlog_number);
-            vlog_manager_.RemoveSortedCleaningVlog(clean_vlog_number);
+            // vlog_manager_.RemoveSortedCleaningVlog(clean_vlog_number);
         }
         
         // if(shutting_down_.Acquire_Load() || !bg_error_.ok())
@@ -2070,19 +2405,43 @@ bool DBImpl::GetProperty(const Slice& property, std::string* value) {
     }
     snprintf(buf, sizeof(buf),
              "                               Gc\n"
-             "FileNumber   GcTime(mis) Read(MB) reWrite(B)\n"
+             "FileNumber   GcTime(sec) Read(MB) reWrite(MB)\n"
              "--------------------------------------------------\n"
              );
     value->append(buf);
+    uint64_t total_read_MB = 0;
+    uint64_t total_gc_sec = 0;
+    uint64_t total_rewrite_MB = 0;
+    double total_rewrite_ratio = 0;
+    bool hasGcFlag = false;
     for (const auto& [fileNO, GcStats] : gc_status_) {
+      if (fileNO > 0)
+      {
         snprintf(
             buf, sizeof(buf),
-            "%3ld     %9.0lf   %8.0f   %9.0ld\n",
+            "%3ld     %9.0lf   %10.0f    %9.0lf\n",
             fileNO,
             GcStats.micros / 1e6,
             GcStats.bytes_read / 1048576.0,
-            GcStats.bytes_rewrite);
+            GcStats.bytes_rewrite / 1048576.0);
+        total_read_MB += GcStats.bytes_read / 1048576.0;
+        total_gc_sec += GcStats.micros / 1e3;
+        total_rewrite_MB += GcStats.bytes_rewrite / 1048576.0;
         value->append(buf);
+        hasGcFlag = true;
+      }
+    }
+    total_rewrite_ratio = static_cast<double>(total_rewrite_MB) / static_cast<double>(total_read_MB);
+    if(hasGcFlag == true)
+    {
+      snprintf(
+          buf, sizeof(buf),
+          "total_read_MB = %lu MB, total_gc_sec = %lu ms, total_rewrite_MB = %lu MB, total_rewrite_ratio = %f\n",
+          total_read_MB,
+          total_gc_sec,
+          total_rewrite_MB,
+          total_rewrite_ratio);
+      value->append(buf);
     }
     return true;
   } else if (in == "sstables") {
@@ -2168,8 +2527,9 @@ Status DB::Open(const Options& options, const std::string& dbname,
     // Create new log and a corresponding memtable.
     uint64_t new_log_number = impl->versions_->NewVlogNumber();
     WritableFile* lfile;
-    s = options.env->NewWritableFile(VLogFileName(dbname, new_log_number),
-                                     &lfile);
+    // s = options.env->NewWritableFile(VLogFileName(dbname, new_log_number),
+    //                                  &lfile);
+    s = options.env->NewAppendableFile(VLogFileName(dbname, new_log_number), &lfile);//appendablefile
     if (s.ok()) {
       edit.SetLogNumber(new_log_number);
       impl->vlogfile_ = lfile;
@@ -2177,10 +2537,16 @@ Status DB::Open(const Options& options, const std::string& dbname,
       impl->vlog_ = new log::VWriter(lfile);
       impl->mem_ = new MemTable(impl->internal_comparator_);
       impl->mem_->Ref();
+      //zc update vlogMetaMap
+      // std::cout << "zc DB::Open vlogNum = " << impl->logfile_number_ << std::endl;
+      impl->UpdateOffsetvlogMetaMap(impl->logfile_number_, impl->vlog_head_);
+      impl->UpdateHandlevlogMetaMap(impl->logfile_number_, impl->vlogfile_, impl->vlog_);
       SequentialFile* vlr_file;
       s = impl->options_.env->NewSequentialFile(VLogFileName(impl->dbname_, new_log_number), &vlr_file);
       log::VReader* vlog_reader = new log::VReader(vlr_file, true,0);
       impl->vlog_manager_.AddVlog(new_log_number, vlog_reader);
+      //zc增加vlogOffsetMap的统计信息
+      // impl->AddvlogOffsetMap(impl->logfile_number_, impl->vlog_head_);
       Log(impl->options_.info_log,"newdb\n");
     }
   }
@@ -2189,10 +2555,10 @@ Status DB::Open(const Options& options, const std::string& dbname,
     s = impl->versions_->LogAndApply(&edit, &impl->mutex_);
   }
   
-  if(impl->recover_clean_vlog_number_ == 0)
-  {
-      std::cout << "last open has no unfinished clean_vlog_number" << std::endl;
-  }
+  // if(impl->recover_clean_vlog_number_ == 0)
+  // {
+  //     std::cout << "last open has no unfinished clean_vlog_number" << std::endl;
+  // }
 
   if (s.ok() && impl->recover_clean_vlog_number_ > 0 &&
           impl->vlog_manager_.NeedRecover(impl->recover_clean_vlog_number_)) {
@@ -2208,6 +2574,8 @@ Status DB::Open(const Options& options, const std::string& dbname,
   } else {
     delete impl;
   }
+
+  impl->DumpvlogOffsetMap();
   return s;
 }
 

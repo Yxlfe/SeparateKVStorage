@@ -38,7 +38,7 @@ class DBImpl : public DB {
   // Implementations of the DB interface
   virtual Status Put(const WriteOptions&, const Slice& key, const Slice& value);
   virtual Status Delete(const WriteOptions&, const Slice& key);
-  virtual Status Write(const WriteOptions& options, WriteBatch* updates);
+  virtual Status Write(const WriteOptions& options, WriteBatch* updates, bool rewrite = false);
   virtual Status ReWrite(const WriteOptions& options, WriteBatch* updates);
   virtual Status Get(const ReadOptions& options,
                      const Slice& key,
@@ -125,7 +125,7 @@ class DBImpl : public DB {
   Status WriteLevel0Table(MemTable* mem, VersionEdit* edit, Version* base)
       EXCLUSIVE_LOCKS_REQUIRED(mutex_);
 
-  Status MakeRoomForWrite(bool force /* compact even if there is room? */)
+  Status MakeRoomForWrite(bool force /* compact even if there is room? */, WriteBatch* batch = nullptr , bool rewrite = false);
       EXCLUSIVE_LOCKS_REQUIRED(mutex_);
   WriteBatch* BuildBatchGroup(Writer** last_writer);
 
@@ -138,6 +138,23 @@ class DBImpl : public DB {
 
   //zc 修改为一次GC多线程回收文件
   // static void BGClean(void* db, void* vlog_number);
+
+  //zc vlogOffset表的Add接口
+  void AddvlogOffsetMap(uint64_t vlogNumber, uint64_t tailoffset);
+  bool GetvlogOffsetMap(uint64_t vlogNumber, uint64_t& tailoffset);
+
+  void UpdateOffsetvlogMetaMap(uint64_t vlogNumber, uint64_t tailoffset);
+  void UpdateHandlevlogMetaMap(uint64_t vlogNumber, WritableFile* vlogfile, log::VWriter* vlog);
+  bool GetOffsetvlogMetaMap(uint64_t vlogNumber, uint64_t& tailoffset);
+  bool GetHandlevlogMetaMap(uint64_t vlogNumber, WritableFile*& vlogfile, log::VWriter*& vlog);
+  bool DelSpevlogMetaMap(uint64_t vlogNumber);
+  void DelAllvlogMetaMap();
+
+
+  int64_t GetMostInvalidKeyVlogNum(WriteBatch* batch);
+  int64_t searchMaxvlogExistKeyCount();
+
+  void DumpvlogOffsetMap();
 
   static void BGClean(void* db);
   static void BGManualCleanAll(void* db);
@@ -152,7 +169,7 @@ class DBImpl : public DB {
       EXCLUSIVE_LOCKS_REQUIRED(mutex_);
 
   //zc function
-  void AddValidInfoManager(WriteBatch* batch, int head_size, uint64_t vlog_offset);
+  void AddValidInfoManager(WriteBatch* batch);
 
   Status DoCompactionWork(CompactionState* compact)
       EXCLUSIVE_LOCKS_REQUIRED(mutex_);
@@ -186,6 +203,8 @@ class DBImpl : public DB {
   MemTable* mem_;
   MemTable* imm_;                // Memtable being compacted
   port::AtomicPointer has_imm_;  // So bg thread can detect non-NULL imm_
+  uint64_t max_logfile_number_;//最大vlog文件的编号
+  uint64_t max_vlog_head_;//当前vlog文件的偏移写
   uint64_t logfile_number_;//当前vlog文件的编号
   log::VWriter* vlog_; //写vlog的包装类
   WritableFile* vlogfile_;//vlog文件写打开
@@ -193,12 +212,24 @@ class DBImpl : public DB {
   uint64_t check_point_;//vlog文件的重启点
   uint64_t check_log_;//从那个vlog文件开始回放
   // uint64_t drop_count_;//合并产生了多少条垃圾记录，这些新产生的信息还没有持久化到sst文件
-  uint64_t drop_size_;//系统在开启状态下compaction合并产生的垃圾记录的总大小，这些新产生的信息还没有持久化到sst文件
+  // uint64_t drop_size_;//系统在开启状态下compaction合并产生的垃圾记录的总大小，这些新产生的信息还没有持久化到sst文件
   uint64_t recover_clean_vlog_number_;
   uint64_t recover_clean_pos_;
   VlogManager vlog_manager_;
   uint32_t seed_;                // For sampling.
   
+  struct vlogMetaInfo
+  {
+    uint64_t offset;
+    WritableFile* vlogfile;//vlog文件flush句柄
+    log::VWriter* vlog; //vlog文件write句柄（顺序写）
+    vlogMetaInfo(uint64_t off = 0, WritableFile* file = nullptr, log::VWriter* writer = nullptr)
+        : offset(off), vlogfile(file), vlog(writer) {}
+  };
+  
+  std::unordered_map<uint64_t, vlogMetaInfo> vlogMeta;//记录recover恢复的<vlog, tailOffset>
+  std::unordered_map<uint64_t, uint64_t> vlogOffset;
+  std::unordered_map<uint64_t, uint64_t> vlogExistKeyCountsMap;//记录一个batch在vlog文件中可能存在的key数量
 
   // Queue of writers.
   std::deque<Writer*> writers_;
