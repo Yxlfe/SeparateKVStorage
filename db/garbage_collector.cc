@@ -233,8 +233,13 @@ void GarbageCollector::BGCleanBeginGarbageCollect(bool* shutdown, uint64_t& read
 
         if(WriteBatchInternal::ByteSize(&clean_valid_batch) > db_->options_.clean_write_buffer_size)
         {
-            Status s = db_->ReWrite(write_options, &clean_valid_batch);
-            assert(s.ok());
+            // std::cout << "WriteCache before clean_valid_batch size = " 
+            //           << WriteBatchInternal::ByteSize(&clean_valid_batch) << std::endl;
+            Status s = db_->WriteCache(write_options, &clean_valid_batch);
+            // Status s = db_->Write(write_options, &clean_valid_batch);
+            // std::cout << "WriteCache after clean_valid_batch size = " 
+            //           << WriteBatchInternal::ByteSize(&clean_valid_batch) << std::endl;
+            // assert(s.ok());
             if(s.ok())
             {
                 rewrite_size += WriteBatchInternal::ByteSize(&clean_valid_batch);
@@ -247,12 +252,12 @@ void GarbageCollector::BGCleanBeginGarbageCollect(bool* shutdown, uint64_t& read
     // {
     //     if(WriteBatchInternal::ByteSize(&clean_valid_batch) > db_->options_.clean_write_buffer_size)
     //     {
-    //         Status s = db_->ReWrite(write_options, &clean_valid_batch);
-    //         assert(s.ok());
-    //         if(s.ok())
-    //         {
+    //         Status s = db_->WriteCache(write_options, &clean_valid_batch);
+    //         // assert(s.ok());
+    //         // if(s.ok())
+    //         // {
     //             rewrite_size += WriteBatchInternal::ByteSize(&clean_valid_batch);
-    //         }
+    //         // }
     //         clean_valid_batch.Clear();
     //     }
 

@@ -137,11 +137,13 @@ DBImpl::DBImpl(const Options& raw_options, const std::string& dbname)
       vlog_head_(0),
       check_log_(0),
       check_point_(0),
+      true_gc_size_(0),
       // drop_count_(0),
       // drop_size_(0),
       recover_clean_vlog_number_(0),
       recover_clean_pos_(0),
       vlog_manager_(options_.clean_threshold, options_.min_clean_threshold),
+      spkv_cache_(2ULL * 1024 * 1024 * 1024, 512ULL * 1024 * 1024, 1024ULL * 1024 * 1024),
       seed_(0),
       tmp_batch_(new WriteBatch),
       bg_compaction_scheduled_(false),
@@ -160,6 +162,17 @@ DBImpl::DBImpl(const Options& raw_options, const std::string& dbname)
 }
 
 DBImpl::~DBImpl() {
+
+  // Status s = EvictAllCacheData();
+  // if(s.ok())
+  // {
+  //   std::cout << "EvictAllCacheData ok" << std::endl;
+  // }
+  // else
+  // {
+  //   std::cout << "EvictAllCacheData not ok" << std::endl;
+  // }
+
   // Wait for background work to finish
   mutex_.Lock();
   std::cout << "zc " << "before shutting_down_ final cur_vlog = " << GetVlogNumber() << std::endl;
@@ -189,6 +202,8 @@ DBImpl::~DBImpl() {
   {
     std::cout << "GetProperty fail" << std::endl;
   }
+  
+  // spkv_cache_.print_shards();
 
   if (db_lock_ != NULL) {
     env_->UnlockFile(db_lock_);
@@ -1397,11 +1412,88 @@ void DBImpl::RecordReadSample(Slice key) {
 
 // Convenience methods
 Status DBImpl::Put(const WriteOptions& o, const Slice& key, const Slice& val) {
+  UpdateCacheDataValidFlag(key);
   return DB::Put(o, key, val);
 }
 
 Status DBImpl::Delete(const WriteOptions& options, const Slice& key) {
   return DB::Delete(options, key);
+}
+
+void DBImpl::UpdateCacheDataValidFlag(const Slice& key)
+{
+  bool update_flag = spkv_cache_.updateInvaildData(key.ToString());
+  // if(update_flag)
+  // {
+  //   std::cout << "UpdateCacheDataValidFlag key = " << key.ToString() << std::endl;
+  // }
+}
+
+Status DBImpl::EvictAllCacheData()
+{
+  std::unordered_map<Key, ValueInfo> result;
+  spkv_cache_.evict_all_shard(result);
+  WriteBatch batch;
+  if(!result.empty())
+  {
+    for(auto& pair : result)
+    {
+      batch.Put(pair.first, pair.second.value_);
+    }
+  }
+
+  uint64_t evict_size = 0;
+  evict_size += WriteBatchInternal::ByteSize(&batch);
+  if(evict_size > 12)
+  {
+    std::cout << "EvictAllCacheData before" << (true_gc_size_ / 1024 / 1024) << "MB" << std::endl;
+    true_gc_size_.fetch_add(evict_size, std::memory_order_relaxed);
+    std::cout << "EvictAllCacheData after" << (true_gc_size_ / 1024 / 1024) << "MB" << std::endl;
+    WriteOptions write_options;
+    return Write(write_options, &batch);
+  }
+
+  return Status::OK();
+}
+
+Status DBImpl::WriteCache(const WriteOptions& options, WriteBatch* batch)
+{
+  uint64_t size = WriteBatchInternal::ByteSize(batch);//size是整个batch的长度，包括batch头
+  uint64_t pos = 0;//是相对batch起始位置的偏移
+  Slice key,value;
+  uint64_t recordCounts = 0;
+  std::unordered_map<Key, ValueInfo> result;
+  WriteBatch dedupBatch;
+  while(pos < size)
+  {
+      bool isDel = false;
+      result.clear();
+      Status s =WriteBatchInternal::ParseRecord(batch, pos, key, value, isDel);//解析完一条kv后pos是下一条kv的pos
+      assert(s.ok());
+      if(!isDel)
+      {
+        spkv_cache_.insert(key.ToString(), value.ToString(), result);
+        if(!result.empty())
+        {
+          for(auto& pair : result)
+          {
+            dedupBatch.Put(pair.first, pair.second.value_);
+          }
+        }
+      }
+  }
+
+  uint64_t evict_size = 0;
+  evict_size += WriteBatchInternal::ByteSize(&dedupBatch);
+  // true_gc_size_ += evict_size;
+  true_gc_size_.fetch_add(evict_size, std::memory_order_relaxed);
+  if(evict_size > 12)
+  {
+    // std::cout << "zc WriteCache total evict " << evict_size / 1024 / 1024 << "MB" << std::endl;
+    return Write(options, &dedupBatch);
+  }
+
+  return Status::OK();
 }
 
 Status DBImpl::Write(const WriteOptions& options, WriteBatch* my_batch, bool rewrite) {
@@ -1611,7 +1703,7 @@ void DBImpl::AddValidInfoManager(WriteBatch* batch)
   uint64_t pos = 0;//是相对batch起始位置的偏移
   Slice key,value;
   uint64_t recordCounts = 0;
-  while(pos < size)//遍历batch看哪些kv有效
+  while(pos < size)
   {
       bool isDel = false;
       Status s =WriteBatchInternal::ParseRecord(batch, pos, key, value, isDel);//解析完一条kv后pos是下一条kv的pos
@@ -1983,11 +2075,23 @@ void DBImpl::BackgroundClean()
             // mutex_.Unlock();
         }
         else if(gc_stats.bytes_rewrite != 0)
+        // if(gc_stats.bytes_rewrite != 0)
         {
+          // std::cout << "zc clean_vlog_number = "
+          //           << clean_vlog_number
+          //           << " ,gc_stats.bytes_rewrite"
+          //           << gc_stats.bytes_rewrite
+          //           << std::endl;
             gc_status_[clean_vlog_number].Add(gc_stats);
             // vlog_manager_.RemoveCleaningVlog(clean_vlog_number);
             vlog_manager_.RemoveSortedCleaningVlog(clean_vlog_number);
         }
+
+        // if(shutdown)
+        // {
+        //   std::cout << "zc shut_down break" << std::endl;
+        //   break;
+        // }
         
         // if(shutting_down_.Acquire_Load() || !bg_error_.ok())
         // {
@@ -2075,7 +2179,7 @@ bool DBImpl::GetProperty(const Slice& property, std::string* value) {
       }
     }
     snprintf(buf, sizeof(buf),
-             "                               Gc\n"
+             "                               GcInfo\n"
              "FileNumber   GcTime(sec) Read(MB) reWrite(MB)\n"
              "--------------------------------------------------\n"
              );
@@ -2083,6 +2187,7 @@ bool DBImpl::GetProperty(const Slice& property, std::string* value) {
     uint64_t total_read_MB = 0;
     uint64_t total_gc_sec = 0;
     uint64_t total_rewrite_MB = 0;
+    uint64_t total_true_rewrite_MB = true_gc_size_ / 1048576.0;
     double total_rewrite_ratio = 0;
     bool hasGcFlag = false;
     for (const auto& [fileNO, GcStats] : gc_status_) {
@@ -2107,11 +2212,12 @@ bool DBImpl::GetProperty(const Slice& property, std::string* value) {
       total_rewrite_ratio = static_cast<double>(total_rewrite_MB) / static_cast<double>(total_read_MB);
       snprintf(
             buf, sizeof(buf),
-            "total_read_MB = %lu MB, total_gc_sec = %lu ms, total_rewrite_MB = %lu MB, total_rewrite_ratio = %f\n",
+            "total_read_MB = %lu MB, total_gc_sec = %lu ms, total_rewrite_MB = %lu MB, total_rewrite_ratio = %f, total_true_rewrite_MB = %lu MB\n",
             total_read_MB,
             total_gc_sec,
             total_rewrite_MB,
-            total_rewrite_ratio);
+            total_rewrite_ratio,
+            total_true_rewrite_MB);
       value->append(buf);
     }
     return true;
@@ -2172,10 +2278,14 @@ Status DB::Put(const WriteOptions& opt, const Slice& key, const Slice& value) {
   //可以在对缓冲区达到配置要求后对kv排序
   //分区内存放有序kv的个数（分区容量C） = 缓冲区内全局有序的kv总数 / m 
   //从排序得到的全局有序序列中分组得到局部有序序列
+
   WriteBatch batch;
   batch.Put(key, value);
+
   return Write(opt, &batch);
 }
+
+
 
 Status DB::Delete(const WriteOptions& opt, const Slice& key) {
   WriteBatch batch;

@@ -7,9 +7,9 @@
 # to switch between compilation modes.
 
 # (A) Production use (optimized mode)
-OPT ?= -O2 -DNDEBUG
+# OPT ?= -O2 -DNDEBUG
 # (B) Debug mode, w/ full line-level debugging symbols
-# OPT ?= -g2
+OPT ?= -g2
 # (C) Profiling mode: opt, but w/debugging symbols
 # OPT ?= -O2 -g2 -DNDEBUG
 #-----------------------------------------------
@@ -286,7 +286,7 @@ $(STATIC_OUTDIR)/libmemenv.a: $(STATIC_OUTDIR) $(DEVICE_OUTDIR)/libmemenv.a $(SI
 else
 $(STATIC_OUTDIR)/libspkvdb.a:$(STATIC_LIBOBJECTS)
 	rm -f $@
-	$(AR) -rs $@ $(STATIC_LIBOBJECTS)
+	$(AR) -rs $@ $(STATIC_LIBOBJECTS) 
 
 $(STATIC_OUTDIR)/libmemenv.a:$(STATIC_MEMENVOBJECTS)
 	rm -f $@

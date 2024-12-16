@@ -19,6 +19,7 @@
 #include "port/port.h"
 #include "port/thread_annotations.h"
 #include "db/vlog_manager.h"
+#include "db/spkvdb_cache.h"
 
 namespace leveldb {
 
@@ -39,7 +40,10 @@ class DBImpl : public DB {
   virtual Status Put(const WriteOptions&, const Slice& key, const Slice& value);
   virtual Status Delete(const WriteOptions&, const Slice& key);
   // virtual Status Write(const WriteOptions& options, WriteBatch* updates);
-  virtual Status Write(const WriteOptions& options, WriteBatch* my_batch, bool rewrite = false); 
+  virtual Status Write(const WriteOptions& options, WriteBatch* my_batch, bool rewrite = false);
+  Status WriteCache(const WriteOptions& options, WriteBatch* batch);
+  void UpdateCacheDataValidFlag(const Slice& key);
+  Status EvictAllCacheData();
   virtual Status ReWrite(const WriteOptions& options, WriteBatch* updates);
   virtual Status Get(const ReadOptions& options,
                      const Slice& key,
@@ -199,11 +203,12 @@ class DBImpl : public DB {
   uint64_t recover_clean_pos_;
   VlogManager vlog_manager_;
   uint32_t seed_;                // For sampling.
+  std::atomic<uint64_t> true_gc_size_;
   
 
   // Queue of writers.
   std::deque<Writer*> writers_;
-  //zc 封装一个WriteBatch的队列代表写入单个vlog的有序kv组
+  SpkvCache spkv_cache_;
 
   WriteBatch* tmp_batch_;
 
